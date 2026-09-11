@@ -22,20 +22,26 @@ public class InventoryDbContext : DbContext
 
     public override int SaveChanges()
     {
+        EnforceStockBalanceLedgerConsistency();
         EnsureStockMovementsAreAppendOnly();
+
         return base.SaveChanges();
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
+        EnforceStockBalanceLedgerConsistency();
         EnsureStockMovementsAreAppendOnly();
+
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
     public override Task<int> SaveChangesAsync(
         CancellationToken cancellationToken = default)
     {
+        EnforceStockBalanceLedgerConsistency();
         EnsureStockMovementsAreAppendOnly();
+
         return base.SaveChangesAsync(cancellationToken);
     }
 
@@ -43,6 +49,7 @@ public class InventoryDbContext : DbContext
         bool acceptAllChangesOnSuccess,
         CancellationToken cancellationToken = default)
     {
+        EnforceStockBalanceLedgerConsistency();
         EnsureStockMovementsAreAppendOnly();
 
         return base.SaveChangesAsync(
@@ -71,6 +78,68 @@ public class InventoryDbContext : DbContext
             .HasQueryFilter(movement =>
                 _tenantContext.CompanyId != null &&
                 movement.StockItem.CompanyId == _tenantContext.CompanyId);
+    }
+
+    private void EnforceStockBalanceLedgerConsistency()
+    {
+        var addedMovements = ChangeTracker
+            .Entries<StockMovement>()
+            .Where(entry => entry.State == EntityState.Added)
+            .Select(entry => entry.Entity)
+            .ToList();
+
+        var changedStockItems = ChangeTracker
+            .Entries<StockItem>()
+            .Where(entry =>
+                entry.State == EntityState.Added ||
+                (entry.State == EntityState.Modified &&
+                 (entry.Property(item => item.QuantityOnHand).IsModified ||
+                  entry.Property(item => item.QuantityReserved).IsModified)))
+            .ToList();
+
+        foreach (var stockItemEntry in changedStockItems)
+        {
+            var stockItem = stockItemEntry.Entity;
+
+            var originalOnHand = stockItemEntry.State == EntityState.Added
+                ? 0
+                : stockItemEntry
+                    .Property(item => item.QuantityOnHand)
+                    .OriginalValue;
+
+            var originalReserved = stockItemEntry.State == EntityState.Added
+                ? 0
+                : stockItemEntry
+                    .Property(item => item.QuantityReserved)
+                    .OriginalValue;
+
+            var onHandDelta = stockItem.QuantityOnHand - originalOnHand;
+            var reservedDelta = stockItem.QuantityReserved - originalReserved;
+
+            if (onHandDelta == 0 && reservedDelta == 0)
+            {
+                continue;
+            }
+
+            var matchingMovements = addedMovements
+                .Where(movement =>
+                    movement.StockItemId == stockItem.StockItemId ||
+                    ReferenceEquals(movement.StockItem, stockItem))
+                .ToList();
+
+            var recordedOnHandDelta = matchingMovements.Sum(
+                movement => movement.OnHandDelta);
+
+            var recordedReservedDelta = matchingMovements.Sum(
+                movement => movement.ReservedDelta);
+
+            if (recordedOnHandDelta != onHandDelta ||
+                recordedReservedDelta != reservedDelta)
+            {
+                throw new InvalidOperationException(
+                    "Every stock balance change must have matching stock movement ledger entries.");
+            }
+        }
     }
 
     private void EnsureStockMovementsAreAppendOnly()
