@@ -14,7 +14,7 @@ public sealed class StockMovementConfiguration
             table => table.HasCheckConstraint(
                 "ck_stock_movement_type",
                 "movement_type IN (" +
-                "'ManualAdjustment', 'Reserved', 'Released', 'Sold', 'Returned')"));
+"'Adjustment', 'Reserved', 'Released', 'Sold', 'Returned', 'Transferred')"));
 
         builder.HasKey(movement => movement.StockMovementId)
             .HasName("pk_stock_movement");

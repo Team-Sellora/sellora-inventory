@@ -200,7 +200,7 @@ namespace Sellora.InventoryService.Infrastructure.Persistence.Migrations
 
                     b.ToTable("stock_movement", null, t =>
                         {
-                            t.HasCheckConstraint("ck_stock_movement_type", "movement_type IN ('ManualAdjustment', 'Reserved', 'Released', 'Sold', 'Returned')");
+                            t.HasCheckConstraint("ck_stock_movement_type", "movement_type IN ('Adjustment', 'Reserved', 'Released', 'Sold', 'Returned', 'Transferred')");
                         });
                 });
 

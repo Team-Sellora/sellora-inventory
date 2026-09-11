@@ -78,7 +78,7 @@ namespace Sellora.InventoryService.Infrastructure.Persistence.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("pk_stock_movement", x => x.stock_movement_id);
-                    table.CheckConstraint("ck_stock_movement_type", "movement_type IN ('ManualAdjustment', 'Reserved', 'Released', 'Sold', 'Returned')");
+                    table.CheckConstraint("ck_stock_movement_type", "movement_type IN (" + "'Adjustment', 'Reserved', 'Released', 'Sold', 'Returned', 'Transferred')");
                     table.ForeignKey(
                         name: "fk_stock_movement_stock_item",
                         column: x => x.stock_item_id,
