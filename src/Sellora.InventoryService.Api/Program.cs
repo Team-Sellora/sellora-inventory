@@ -5,8 +5,10 @@ using Sellora.InventoryService.Api.Authorization;
 using Sellora.InventoryService.Api.Identity;
 using Sellora.InventoryService.Api.Tenancy;
 using Sellora.InventoryService.Application.Identity;
+using Sellora.InventoryService.Application.Stock;
 using Sellora.InventoryService.Domain.Tenancy;
 using Sellora.InventoryService.Infrastructure.Persistence;
+using Sellora.InventoryService.Infrastructure.Stock;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -66,6 +68,10 @@ if (string.IsNullOrWhiteSpace(connectionString))
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ITenantContext, HttpTenantContext>();
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
+
+builder.Services.AddScoped<
+    IStockAdjustmentService,
+    StockAdjustmentService>();
 
 builder.Services.AddDbContext<InventoryDbContext>(options =>
     options.UseNpgsql(connectionString));
