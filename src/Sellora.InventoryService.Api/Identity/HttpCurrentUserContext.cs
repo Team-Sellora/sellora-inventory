@@ -7,18 +7,23 @@ public sealed class HttpCurrentUserContext(
     IHttpContextAccessor httpContextAccessor)
     : ICurrentUserContext
 {
+    private ClaimsPrincipal? User =>
+        httpContextAccessor.HttpContext?.User;
+
     public string? Subject =>
-        httpContextAccessor.HttpContext?.User
-            .FindFirst("sub")?.Value
-        ?? httpContextAccessor.HttpContext?.User
-            .FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        User?.FindFirst("sub")?.Value
+        ?? User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+    public string? Role =>
+        User?.FindFirst(ClaimTypes.Role)?.Value
+        ?? User?.FindFirst("roles")?.Value
+        ?? User?.FindFirst("role")?.Value;
 
     public Guid? AgencyId
     {
         get
         {
-            var value = httpContextAccessor.HttpContext?.User
-                .FindFirst("agencyId")?.Value;
+            var value = User?.FindFirst("agencyId")?.Value;
 
             return Guid.TryParse(value, out var agencyId)
                 ? agencyId

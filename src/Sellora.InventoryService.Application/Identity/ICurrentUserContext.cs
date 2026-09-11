@@ -4,5 +4,7 @@ public interface ICurrentUserContext
 {
     string? Subject { get; }
 
+    string? Role { get; }
+
     Guid? AgencyId { get; }
 }
