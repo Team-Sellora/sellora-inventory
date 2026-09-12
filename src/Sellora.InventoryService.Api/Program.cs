@@ -1,12 +1,15 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Sellora.InventoryService.Api.Authorization;
 using Sellora.InventoryService.Api.Identity;
 using Sellora.InventoryService.Api.Tenancy;
+using Sellora.InventoryService.Application.Events;
 using Sellora.InventoryService.Application.Identity;
 using Sellora.InventoryService.Application.Stock;
 using Sellora.InventoryService.Domain.Tenancy;
+using Sellora.InventoryService.Infrastructure.HierarchyEvents;
 using Sellora.InventoryService.Infrastructure.Persistence;
 using Sellora.InventoryService.Infrastructure.Stock;
 using Serilog;
@@ -76,6 +79,19 @@ builder.Services.AddScoped<
 builder.Services.AddScoped<
     IStockReadService,
     StockReadService>();
+
+builder.Services.Configure<HierarchyConsumerOptions>(
+    builder.Configuration.GetSection(
+        HierarchyConsumerOptions.SectionName));
+
+builder.Services.AddScoped<
+    IHierarchyEventHandler,
+    InventoryOwnerHierarchyEventHandler>();
+
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services.AddHostedService<HierarchyEventConsumerService>();
+}
 
 builder.Services.AddDbContext<InventoryDbContext>(options =>
     options.UseNpgsql(connectionString));
