@@ -85,6 +85,14 @@ builder.Services.AddScoped<
     IStockReadService,
     StockReadService>();
 
+builder.Services.Configure<StockReservationOptions>(
+    builder.Configuration.GetSection(
+        StockReservationOptions.SectionName));
+
+builder.Services.AddScoped<
+    IStockReservationService,
+    StockReservationService>();
+
 builder.Services.Configure<HierarchyConsumerOptions>(
     builder.Configuration.GetSection(
         HierarchyConsumerOptions.SectionName));
