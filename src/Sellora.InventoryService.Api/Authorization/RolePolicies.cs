@@ -16,8 +16,9 @@ public static class RolePolicies
     }
 
     private static bool HasRole(
-        AuthorizationHandlerContext context,
-        params string[] roles) =>
-        roles.Any(role =>
-            context.User.HasClaim(ClaimTypes.Role, role));
+    AuthorizationHandlerContext context,
+    params string[] roles) =>
+    roles.Any(role =>
+        context.User.HasClaim(ClaimTypes.Role, role) ||
+        context.User.HasClaim("roles", role));
 }
