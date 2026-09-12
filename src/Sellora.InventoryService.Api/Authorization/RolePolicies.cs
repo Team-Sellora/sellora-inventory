@@ -6,13 +6,22 @@ namespace Sellora.InventoryService.Api.Authorization;
 public static class RolePolicies
 {
     public const string RequireStockAdjustment = "RequireStockAdjustment";
+    public const string RequireStockRead = "RequireStockRead";
 
     public static void AddSelloraInventoryPolicies(
-        this AuthorizationOptions options)
+    this AuthorizationOptions options)
     {
         options.AddPolicy(RequireStockAdjustment, policy =>
             policy.RequireAssertion(context =>
                 HasRole(context, "CompanyAdmin", "AgencyOperator")));
+
+        options.AddPolicy(RequireStockRead, policy =>
+            policy.RequireAssertion(context =>
+                HasRole(
+                    context,
+                    "CompanyAdmin",
+                    "AgencyOperator",
+                    "SalesRep")));
     }
 
     private static bool HasRole(

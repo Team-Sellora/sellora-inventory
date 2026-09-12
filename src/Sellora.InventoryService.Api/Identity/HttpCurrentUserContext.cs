@@ -30,4 +30,16 @@ public sealed class HttpCurrentUserContext(
                 : null;
         }
     }
+
+    public Guid? SalesRepId
+    {
+        get
+        {
+            var value = User?.FindFirst("salesRepId")?.Value;
+
+            return Guid.TryParse(value, out var salesRepId)
+                ? salesRepId
+                : null;
+        }
+    }
 }

@@ -7,4 +7,6 @@ public interface ICurrentUserContext
     string? Role { get; }
 
     Guid? AgencyId { get; }
+
+    Guid? SalesRepId { get; }
 }
