@@ -1,4 +1,5 @@
 using Sellora.InventoryService.Domain.Tenancy;
+using Sellora.InventoryService.Domain.Exceptions;
 
 namespace Sellora.InventoryService.Domain.Entities;
 
@@ -62,8 +63,7 @@ public class StockItem : ITenantScoped
 
         if (nextOnHand < 0)
         {
-            throw new InvalidOperationException(
-                "Stock on-hand quantity cannot be negative.");
+            throw new InsufficientStockException();
         }
 
         if (nextReserved < 0)

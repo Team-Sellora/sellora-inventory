@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using Sellora.InventoryService.Application.Identity;
 using Sellora.InventoryService.Application.Stock;
 using Sellora.InventoryService.Domain.Entities;
+using Sellora.InventoryService.Domain.Exceptions;
 using Sellora.InventoryService.Domain.Inventory;
 using Sellora.InventoryService.Domain.Tenancy;
 using Sellora.InventoryService.Infrastructure.Persistence;
@@ -121,9 +123,19 @@ public sealed class StockAdjustmentService : IStockAdjustmentService
             stockItem.ApplyMovement(movement);
             await _db.SaveChangesAsync(cancellationToken);
         }
-        catch (InvalidOperationException)
+        catch (InsufficientStockException)
         {
             return AdjustStockResult.InsufficientStock();
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return AdjustStockResult.ConcurrencyConflict();
+        }
+        catch (DbUpdateException exception) when (IsStockItemUniqueConstraintViolation(exception))
+        {
+            // Two requests can both observe a missing stock item before one
+            // creates it. The unique index is the final concurrency guard.
+            return AdjustStockResult.ConcurrencyConflict();
         }
 
         return AdjustStockResult.Success(
@@ -159,4 +171,14 @@ public sealed class StockAdjustmentService : IStockAdjustmentService
                owner.OwnerType == InventoryOwnerType.Agency &&
                owner.ExternalOwnerId == _currentUser.AgencyId.Value;
     }
+
+    private static bool IsStockItemUniqueConstraintViolation(
+        DbUpdateException exception) =>
+        exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName:
+                "uq_stock_item_owner_product_batch" or
+                "uq_stock_item_owner_product_without_batch"
+        };
 }

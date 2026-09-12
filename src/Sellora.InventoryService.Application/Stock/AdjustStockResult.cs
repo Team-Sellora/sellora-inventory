@@ -8,7 +8,8 @@ public enum AdjustStockOutcome
     CallerNotAuthorized,
     InventoryOwnerNotFound,
     ProductNotFound,
-    InsufficientStock
+    InsufficientStock,
+    ConcurrencyConflict
 }
 
 public sealed class AdjustStockResult
@@ -64,4 +65,9 @@ public sealed class AdjustStockResult
         new(
             AdjustStockOutcome.InsufficientStock,
             "The adjustment would make stock on-hand negative.");
+
+    public static AdjustStockResult ConcurrencyConflict() =>
+        new(
+            AdjustStockOutcome.ConcurrencyConflict,
+            "Stock was changed by another request. Refresh and try again.");
 }
