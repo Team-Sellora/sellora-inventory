@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using Sellora.InventoryService.Application.Stock;
 using Sellora.InventoryService.Domain.Entities;
 using Sellora.InventoryService.Domain.Inventory;
@@ -238,10 +239,30 @@ public sealed class StockReservationService : IStockReservationService
 
         _db.StockReservations.Add(reservation);
 
-        await _db.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
 
-        return ReserveStockResult.Success(ToResponse(reservation));
+            return ReserveStockResult.Success(ToResponse(reservation));
+        }
+        catch (DbUpdateException exception)
+            when (IsDuplicateOrderReference(exception))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+
+            var persistedReservation = await FindByOrderReferenceAsync(
+                request.OrderReference,
+                cancellationToken);
+
+            if (persistedReservation is not null)
+            {
+                return ReserveStockResult.Success(
+                    ToResponse(persistedReservation));
+            }
+
+            throw;
+        }
     }
 
     public async Task<ReserveStockResult> ReleaseAsync(
@@ -373,6 +394,13 @@ public sealed class StockReservationService : IStockReservationService
 
         return ReserveStockResult.Success(ToResponse(reservation));
     }
+
+    private static bool IsDuplicateOrderReference(
+        DbUpdateException exception) =>
+        exception.InnerException is PostgresException postgresException &&
+        postgresException.SqlState == PostgresErrorCodes.UniqueViolation &&
+        postgresException.ConstraintName ==
+            "uq_stock_reservation_company_order_reference";
 
     private async Task<ReserveStockResult> InsufficientStockAsync(
         Guid inventoryOwnerId,
