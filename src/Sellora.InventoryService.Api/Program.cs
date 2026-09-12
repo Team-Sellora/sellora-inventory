@@ -73,6 +73,10 @@ builder.Services.AddScoped<
     IStockAdjustmentService,
     StockAdjustmentService>();
 
+builder.Services.AddScoped<
+    IStockReadService,
+    StockReadService>();
+
 builder.Services.AddDbContext<InventoryDbContext>(options =>
     options.UseNpgsql(connectionString));
 

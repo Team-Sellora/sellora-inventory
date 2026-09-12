@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Sellora.InventoryService.Api.Authorization;
 using Sellora.InventoryService.Api.Contracts;
 using Sellora.InventoryService.Application.Stock;
+using Sellora.InventoryService.Domain.Tenancy;
 
 namespace Sellora.InventoryService.Api.Controllers;
 
@@ -11,11 +12,39 @@ namespace Sellora.InventoryService.Api.Controllers;
 public sealed class StockController : ControllerBase
 {
     private readonly IStockAdjustmentService _stockAdjustmentService;
+    private readonly IStockReadService _stockReadService;
+    private readonly ITenantContext _tenantContext;
 
     public StockController(
-        IStockAdjustmentService stockAdjustmentService)
+        IStockAdjustmentService stockAdjustmentService,
+        IStockReadService stockReadService,
+        ITenantContext tenantContext)
     {
         _stockAdjustmentService = stockAdjustmentService;
+        _stockReadService = stockReadService;
+        _tenantContext = tenantContext;
+    }
+
+    [HttpGet]
+    [Authorize(Policy = RolePolicies.RequireStockRead)]
+    public async Task<ActionResult<IReadOnlyCollection<StockItemResponse>>> GetStock(
+        [FromQuery] Guid? productId,
+        [FromQuery] Guid? inventoryOwnerId,
+        CancellationToken cancellationToken)
+    {
+        if (_tenantContext.CompanyId is null)
+        {
+            return Unauthorized(new
+            {
+                Message = "A valid company identifier was not found in the access token."
+            });
+        }
+
+        var stock = await _stockReadService.GetStockAsync(
+            new StockListQuery(productId, inventoryOwnerId),
+            cancellationToken);
+
+        return Ok(stock);
     }
 
     [HttpPost("adjustments")]
