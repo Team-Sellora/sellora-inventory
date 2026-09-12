@@ -1,0 +1,74 @@
+name: CD - Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-production:
+    name: Deploy to Azure production
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push image
+        run: |
+          set -euo pipefail
+
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/sellora-inventory"
+
+          docker build \
+            -t "${IMAGE}:${{ github.sha }}" \
+            -t "${IMAGE}:prod" \
+            .
+
+          docker push "${IMAGE}:${{ github.sha }}"
+          docker push "${IMAGE}:prod"
+
+      - name: Deploy to production
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: sellora-inventory
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PRODUCTION_PUBLISH_PROFILE }}
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/sellora-inventory:${{ github.sha }}
+
+      - name: Validate deployed production startup
+        shell: bash
+        env:
+          BASE_URL: ${{ secrets.PRODUCTION_BASE_URL }}
+        run: |
+          set -euo pipefail
+
+          HEALTH_URL="${BASE_URL}/health"
+
+          for attempt in {1..12}; do
+            HEALTH_STATUS=$(curl \
+              --silent \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              "$HEALTH_URL" || true)
+
+            if [ "$HEALTH_STATUS" = "200" ]; then
+              echo "Production startup validation passed: /health=200"
+              exit 0
+            fi
+
+            echo "Attempt $attempt -> /health=${HEALTH_STATUS}"
+            sleep 10
+          done
+
+          echo "Production deployment validation failed: app did not start with expected runtime configuration"
+          exit 1

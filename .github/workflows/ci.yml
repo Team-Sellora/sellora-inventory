@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: ./.github/workflows/reusable-ci.yml
+    with:
+      solution-path: Sellora.InventoryService.sln
+      sonar-project-key: Team-Sellora_sellora-inventory
+      sonar-organization: team-sellora
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

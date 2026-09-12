@@ -1,0 +1,75 @@
+name: CD - Deploy Staging
+
+on:
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-staging:
+    name: Deploy to Azure staging
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push image
+        run: |
+          set -euo pipefail
+
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/sellora-inventory"
+
+          docker build \
+            -t "${IMAGE}:${{ github.sha }}" \
+            -t "${IMAGE}:staging" \
+            .
+
+          docker push "${IMAGE}:${{ github.sha }}"
+          docker push "${IMAGE}:staging"
+
+      - name: Deploy to staging slot
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: sellora-inventory
+          slot-name: staging
+          publish-profile: ${{ secrets.AZURE_STAGING_PUBLISH_PROFILE }}
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/sellora-inventory:${{ github.sha }}
+
+      - name: Validate deployed app startup
+        shell: bash
+        env:
+          BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+        run: |
+          set -euo pipefail
+
+          HEALTH_URL="${BASE_URL}/health"
+
+          for attempt in {1..12}; do
+            HEALTH_STATUS=$(curl \
+              --silent \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              "$HEALTH_URL" || true)
+
+            if [ "$HEALTH_STATUS" = "200" ]; then
+              echo "Startup validation passed: /health=200"
+              exit 0
+            fi
+
+            echo "Attempt $attempt -> /health=${HEALTH_STATUS}"
+            sleep 10
+          done
+
+          echo "Deployment validation failed: app did not start with expected runtime configuration"
+          exit 1
