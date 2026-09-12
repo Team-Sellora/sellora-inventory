@@ -111,6 +111,48 @@ public sealed class StockReservationServiceTests
     }
 
     [Fact]
+    public async Task ReleaseAsync_releases_stock_and_writes_released_ledger_entry()
+    {
+        var seed = await SeedStockAsync(4);
+
+        await using var db = _fixture.CreateContext(seed.CompanyId);
+        var service = CreateService(db, seed.CompanyId);
+
+        var reserved = await service.ReserveAsync(
+            Request(
+                "ORDER-RELEASE-001",
+                seed.OwnerId,
+                seed.ProductIds[0],
+                quantity: 3));
+
+        Assert.Equal(ReservationOutcome.Success, reserved.Outcome);
+        Assert.NotNull(reserved.Reservation);
+
+        var released = await service.ReleaseAsync(
+            reserved.Reservation!.ReservationId);
+
+        Assert.Equal(ReservationOutcome.Success, released.Outcome);
+        Assert.NotNull(released.Reservation);
+        Assert.Equal("Released", released.Reservation!.Status);
+
+        var stockItem = await db.StockItems
+            .SingleAsync(item => item.StockItemId == seed.StockItemIds[0]);
+
+        Assert.Equal(4, stockItem.QuantityOnHand);
+        Assert.Equal(0, stockItem.QuantityReserved);
+        Assert.Equal(4, stockItem.AvailableQuantity);
+
+        var movement = await db.StockMovements
+            .SingleAsync(candidate =>
+                candidate.ReservationId ==
+                reserved.Reservation.ReservationId &&
+                candidate.MovementType == StockMovementType.Released);
+
+        Assert.Equal(0, movement.OnHandDelta);
+        Assert.Equal(-3, movement.ReservedDelta);
+    }
+
+    [Fact]
     public async Task ReserveAsync_parallel_requests_do_not_oversell()
     {
         var seed = await SeedStockAsync(1);
