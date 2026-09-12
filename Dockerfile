@@ -5,21 +5,21 @@ COPY . .
 
 RUN dotnet restore Sellora.InventoryService.sln
 
-RUN dotnet publish \
-    src/Sellora.InventoryService.Api/Sellora.InventoryService.Api.csproj \
-    -c Release \
-    -o /app/publish \
+RUN dotnet publish src/Sellora.InventoryService.Api/Sellora.InventoryService.Api.csproj \
+    --configuration Release \
+    --output /app/publish \
+    --no-self-contained \
     --no-restore \
     /p:UseAppHost=false
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 
+COPY --from=build /app/publish .
+
 EXPOSE 8080
 
 ENV ASPNETCORE_URLS=http://+:8080
 ENV ASPNETCORE_ENVIRONMENT=Production
-
-COPY --from=build /app/publish .
 
 ENTRYPOINT ["dotnet", "Sellora.InventoryService.Api.dll"]
