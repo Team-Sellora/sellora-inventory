@@ -1,6 +1,5 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Sellora.InventoryService.Api.Authorization;
 using Sellora.InventoryService.Api.Identity;
@@ -44,6 +43,9 @@ builder.Services
             RoleClaimType = "roles"
         };
 
+        // Local Development/Staging use the shared IS certificate, which may
+        // not be trusted by every developer machine. Never bypass validation
+        // in Production or Container environments.
         if (builder.Environment.IsDevelopment() ||
             builder.Environment.IsStaging())
         {
@@ -59,6 +61,10 @@ builder.Services
 builder.Services.AddAuthorization(options =>
     options.AddSelloraInventoryPolicies());
 
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<ITenantContext, HttpTenantContext>();
+builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
+
 var connectionString =
     builder.Configuration.GetConnectionString("Default");
 
@@ -68,9 +74,8 @@ if (string.IsNullOrWhiteSpace(connectionString))
         "The inventory database connection string is not configured.");
 }
 
-builder.Services.AddHttpContextAccessor();
-builder.Services.AddScoped<ITenantContext, HttpTenantContext>();
-builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
+builder.Services.AddDbContext<InventoryDbContext>(options =>
+    options.UseNpgsql(connectionString));
 
 builder.Services.AddScoped<
     IStockAdjustmentService,
@@ -93,14 +98,9 @@ if (!builder.Environment.IsEnvironment("Testing"))
     builder.Services.AddHostedService<HierarchyEventConsumerService>();
 }
 
-builder.Services.AddDbContext<InventoryDbContext>(options =>
-    options.UseNpgsql(connectionString));
-
 builder.Services.AddProblemDetails();
 builder.Services.AddHealthChecks();
 builder.Services.AddControllers();
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
 
 var allowedOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
@@ -118,6 +118,9 @@ builder.Services.AddCors(options =>
         policy.AllowAnyHeader().AllowAnyMethod();
     });
 });
+
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
@@ -140,7 +143,14 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+// Containers receive internal HTTP traffic. HTTPS is terminated by APIM or
+// the reverse proxy, allowing the direct /health probe to return HTTP 200.
+if (!app.Environment.IsEnvironment("Container"))
+{
+    app.UseHttpsRedirection();
+}
+
+// Match Catalogue: CORS must run before authentication for browser preflight.
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
