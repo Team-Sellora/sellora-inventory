@@ -1,0 +1,129 @@
+name: Reusable .NET CI
+
+on:
+  workflow_call:
+    inputs:
+      solution-path:
+        required: true
+        type: string
+      sonar-project-key:
+        required: true
+        type: string
+      sonar-organization:
+        required: true
+        type: string
+    secrets:
+      SONAR_TOKEN:
+        required: true
+
+jobs:
+  build-test-analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: inventory_ci
+          POSTGRES_USER: sellora_ci
+          POSTGRES_PASSWORD: sellora_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sellora_ci -d inventory_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      kafka:
+        image: apache/kafka:3.9.2
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+          KAFKA_NUM_PARTITIONS: 3
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 12
+          --health-start-period 15s
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.403
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: zulu
+
+      - name: Install SonarScanner
+        run: |
+          dotnet tool install dotnet-sonarscanner \
+            --tool-path "${{ runner.temp }}/scanner"
+
+      - name: Restore dependencies
+        run: dotnet restore "${{ inputs.solution-path }}"
+
+      - name: SonarQube begin
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          "${{ runner.temp }}/scanner/dotnet-sonarscanner" begin \
+            /k:"${{ inputs.sonar-project-key }}" \
+            /o:"${{ inputs.sonar-organization }}" \
+            /d:sonar.token="$SONAR_TOKEN" \
+            /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml"
+
+      - name: Build solution
+        run: |
+          dotnet build "${{ inputs.solution-path }}" \
+            --configuration Release \
+            --no-restore
+
+      - name: Run tests with coverage
+        run: |
+          dotnet test "${{ inputs.solution-path }}" \
+            --configuration Release \
+            --no-build \
+            --collect:"XPlat Code Coverage" \
+            --results-directory ./TestResults \
+            --logger "trx;LogFileName=test-results.trx"
+
+      - name: SonarQube end
+        if: always()
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          "${{ runner.temp }}/scanner/dotnet-sonarscanner" end \
+            /d:sonar.token="$SONAR_TOKEN"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ./TestResults
+
+      - name: Verify Docker image builds
+        run: docker build -t sellora-inventory:ci .
