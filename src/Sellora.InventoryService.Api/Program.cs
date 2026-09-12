@@ -106,6 +106,11 @@ if (!builder.Environment.IsEnvironment("Testing"))
     builder.Services.AddHostedService<HierarchyEventConsumerService>();
 }
 
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services.AddHostedService<ReservationExpirySweeper>();
+}
+
 builder.Services.AddProblemDetails();
 builder.Services.AddHealthChecks();
 builder.Services.AddControllers();
