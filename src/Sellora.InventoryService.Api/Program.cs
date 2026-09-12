@@ -43,9 +43,6 @@ builder.Services
             RoleClaimType = "roles"
         };
 
-        // Local Development/Staging use the shared IS certificate, which may
-        // not be trusted by every developer machine. Never bypass validation
-        // in Production or Container environments.
         if (builder.Environment.IsDevelopment() ||
             builder.Environment.IsStaging())
         {
@@ -143,20 +140,27 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// Containers receive internal HTTP traffic. HTTPS is terminated by APIM or
-// the reverse proxy, allowing the direct /health probe to return HTTP 200.
+// Containers receive internal HTTP traffic; HTTPS is terminated by APIM
+// or a reverse proxy, allowing the direct health probe to return HTTP 200.
 if (!app.Environment.IsEnvironment("Container"))
 {
     app.UseHttpsRedirection();
 }
 
-// Match Catalogue: CORS must run before authentication for browser preflight.
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
 app.MapHealthChecks("/health");
+
+app.MapGet("/whoami", (HttpContext context) =>
+    Results.Ok(context.User.Claims.Select(claim => new
+    {
+        claim.Type,
+        claim.Value
+    })))
+    .RequireAuthorization();
 
 app.Run();
 
