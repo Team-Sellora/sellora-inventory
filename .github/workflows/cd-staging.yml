@@ -58,6 +58,7 @@ jobs:
           for attempt in {1..12}; do
             HEALTH_STATUS=$(curl \
               --silent \
+              --location \
               --output /dev/null \
               --write-out "%{http_code}" \
               "$HEALTH_URL" || true)
