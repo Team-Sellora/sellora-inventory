@@ -44,6 +44,8 @@ jobs:
           app-name: sellora-inventory
           publish-profile: ${{ secrets.AZURE_WEBAPP_PRODUCTION_PUBLISH_PROFILE }}
           images: ${{ secrets.DOCKERHUB_USERNAME }}/sellora-inventory:${{ github.sha }}
+          app-settings: >-
+            -WEBSITES_PORT 8080
 
       - name: Validate deployed production startup
         shell: bash
