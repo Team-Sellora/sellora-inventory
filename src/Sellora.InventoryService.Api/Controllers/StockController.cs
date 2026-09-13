@@ -87,6 +87,9 @@ public sealed class StockController : ControllerBase
             AdjustStockOutcome.InsufficientStock =>
                 Conflict(new { result.Message }),
 
+            AdjustStockOutcome.ConcurrencyConflict =>
+                Conflict(new { result.Message }),
+
             _ => Problem(
                 title: "Stock adjustment failed.",
                 statusCode: StatusCodes.Status500InternalServerError)

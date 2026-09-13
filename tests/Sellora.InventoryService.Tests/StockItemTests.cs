@@ -1,4 +1,5 @@
 using Sellora.InventoryService.Domain.Entities;
+using Sellora.InventoryService.Domain.Exceptions;
 using Sellora.InventoryService.Domain.Inventory;
 
 namespace Sellora.InventoryService.Tests;
@@ -34,7 +35,7 @@ public sealed class StockItemTests
     {
         var stockItem = NewStockItem();
 
-        var exception = Assert.Throws<InvalidOperationException>(() =>
+        var exception = Assert.Throws<InsufficientStockException>(() =>
             stockItem.ApplyMovement(Movement(
                 stockItem,
                 StockMovementType.Adjustment,
