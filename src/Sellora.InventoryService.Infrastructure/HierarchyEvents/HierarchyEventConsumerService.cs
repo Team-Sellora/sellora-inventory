@@ -32,6 +32,11 @@ public sealed class HierarchyEventConsumerService : BackgroundService
     protected override async Task ExecuteAsync(
         CancellationToken stoppingToken)
     {
+        // Let the host finish starting Kestrel before entering the blocking
+        // Kafka consume loop. Otherwise a broker connection attempt can keep
+        // the HTTP server from binding to its configured port.
+        await Task.Yield();
+
         var consumerConfig = new ConsumerConfig
         {
             BootstrapServers = _options.BootstrapServers,
