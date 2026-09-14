@@ -113,6 +113,10 @@ builder.Services.Configure<HierarchyConsumerOptions>(
     builder.Configuration.GetSection(
         HierarchyConsumerOptions.SectionName));
 
+builder.Services.Configure<OrderEventConsumerOptions>(
+    builder.Configuration.GetSection(
+        OrderEventConsumerOptions.SectionName));
+
 builder.Services.AddScoped<
     IHierarchyEventHandler,
     InventoryOwnerHierarchyEventHandler>();
