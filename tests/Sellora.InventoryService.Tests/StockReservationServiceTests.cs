@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 using Sellora.InventoryService.Application.Stock;
 using Sellora.InventoryService.Domain.Entities;
@@ -499,6 +501,101 @@ public sealed class StockReservationServiceTests
         }
     }
 
+    [Fact]
+    public async Task Failed_second_line_does_not_leak_ledger_entries_into_retry()
+    {
+        var seed = await SeedStockAsync(5, 5);
+        var interceptor = new FailSecondReservationUpdateInterceptor();
+
+        var options = new DbContextOptionsBuilder<InventoryDbContext>()
+            .UseNpgsql(_fixture.ConnectionString)
+            .AddInterceptors(interceptor)
+            .Options;
+
+        await using var db = new InventoryDbContext(
+            options, new TestTenantContext(seed.CompanyId));
+
+        var service = CreateService(db, seed.CompanyId);
+        var orderReference = $"ORDER-ROLLBACK-{Guid.NewGuid():N}";
+        var request = new ReserveStockRequest(
+            orderReference,
+            seed.OwnerId,
+            seed.ProductIds
+                .Select(productId =>
+                    new ReservationLineRequest(productId, null, 2))
+                .ToArray());
+
+        var failed = await service.ReserveAsync(request);
+
+        Assert.True(interceptor.FailureInjected);
+        Assert.Equal(ReservationOutcome.InsufficientStock, failed.Outcome);
+        Assert.Null(failed.Reservation);
+
+        Assert.DoesNotContain(
+            db.ChangeTracker.Entries<StockMovement>(),
+            entry => entry.State == EntityState.Added);
+
+        await using (var afterFailure = _fixture.CreateContext(seed.CompanyId))
+        {
+            var stocks = await afterFailure.StockItems.ToListAsync();
+
+            Assert.All(stocks, stock =>
+            {
+                Assert.Equal(5, stock.QuantityOnHand);
+                Assert.Equal(0, stock.QuantityReserved);
+            });
+
+            Assert.False(await afterFailure.StockReservations.AnyAsync(
+                reservation => reservation.OrderReference == orderReference));
+
+            Assert.False(await afterFailure.StockMovements.AnyAsync(
+                movement =>
+                    movement.ReferenceType == "Order" &&
+                    movement.ReferenceId == orderReference));
+        }
+
+        // Reuse the same context to expose leftover tracked ledger entries.
+        var retry = await service.ReserveAsync(request);
+
+        Assert.Equal(ReservationOutcome.Success, retry.Outcome);
+        Assert.NotNull(retry.Reservation);
+
+        await using var verifyDb = _fixture.CreateContext(seed.CompanyId);
+
+        var finalStocks = await verifyDb.StockItems.ToListAsync();
+        Assert.All(finalStocks, stock =>
+        {
+            Assert.Equal(5, stock.QuantityOnHand);
+            Assert.Equal(2, stock.QuantityReserved);
+        });
+
+        var reservation = Assert.Single(
+            await verifyDb.StockReservations
+                .Where(candidate => candidate.OrderReference == orderReference)
+                .ToListAsync());
+
+        Assert.Equal(retry.Reservation.ReservationId, reservation.ReservationId);
+
+        var movements = await verifyDb.StockMovements
+            .Where(movement =>
+                movement.ReferenceType == "Order" &&
+                movement.ReferenceId == orderReference)
+            .ToListAsync();
+
+        Assert.Equal(2, movements.Count);
+        Assert.Equal(
+            2,
+            movements.Select(movement => movement.StockItemId).Distinct().Count());
+
+        Assert.All(movements, movement =>
+        {
+            Assert.Equal(reservation.ReservationId, movement.ReservationId);
+            Assert.Equal(StockMovementType.Reserved, movement.MovementType);
+            Assert.Equal(0, movement.OnHandDelta);
+            Assert.Equal(2, movement.ReservedDelta);
+        });
+    }
+
     private async Task<SeedData> SeedStockAsync(
         params int[] quantities)
     {
@@ -589,6 +686,39 @@ public sealed class StockReservationServiceTests
         Guid OwnerId,
         IReadOnlyList<Guid> ProductIds,
         IReadOnlyList<Guid> StockItemIds);
+
+    private sealed class FailSecondReservationUpdateInterceptor
+    : DbCommandInterceptor
+    {
+        private int _reservationUpdates;
+
+        public bool FailureInjected { get; private set; }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains(
+                "quantity_reserved = quantity_reserved +",
+                StringComparison.Ordinal))
+            {
+                _reservationUpdates++;
+
+                if (_reservationUpdates == 2)
+                {
+                    FailureInjected = true;
+
+                    // Simulate a conditional UPDATE affecting zero rows.
+                    return ValueTask.FromResult(
+                        InterceptionResult<int>.SuppressWithResult(0));
+                }
+            }
+
+            return ValueTask.FromResult(result);
+        }
+    }
 
     private sealed class TestTenantContext : ITenantContext
     {
