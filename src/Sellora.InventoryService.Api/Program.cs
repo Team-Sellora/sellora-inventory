@@ -127,6 +127,11 @@ builder.Services.AddScoped<
 
 if (!builder.Environment.IsEnvironment("Testing"))
 {
+    builder.Services.AddHostedService<OrderEventConsumerService>();
+}
+
+if (!builder.Environment.IsEnvironment("Testing"))
+{
     builder.Services.AddHostedService<HierarchyEventConsumerService>();
 }
 
