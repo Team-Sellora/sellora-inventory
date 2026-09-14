@@ -78,6 +78,16 @@ public class InventoryDbContext : DbContext
             .HasQueryFilter(movement =>
                 _tenantContext.CompanyId != null &&
                 movement.StockItem.CompanyId == _tenantContext.CompanyId);
+
+        modelBuilder.Entity<StockReservation>()
+            .HasQueryFilter(reservation =>
+                _tenantContext.CompanyId != null &&
+                reservation.CompanyId == _tenantContext.CompanyId);
+
+        modelBuilder.Entity<StockReservationLine>()
+            .HasQueryFilter(line =>
+                _tenantContext.CompanyId != null &&
+                line.Reservation.CompanyId == _tenantContext.CompanyId);
     }
 
     private void EnforceStockBalanceLedgerConsistency()
@@ -155,4 +165,10 @@ public class InventoryDbContext : DbContext
                 "Stock movements are append-only and cannot be changed or deleted.");
         }
     }
+
+    public DbSet<StockReservation> StockReservations =>
+    Set<StockReservation>();
+
+    public DbSet<StockReservationLine> StockReservationLines =>
+        Set<StockReservationLine>();
 }

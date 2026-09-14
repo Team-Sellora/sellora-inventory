@@ -14,15 +14,18 @@ public sealed class StockController : ControllerBase
     private readonly IStockAdjustmentService _stockAdjustmentService;
     private readonly IStockReadService _stockReadService;
     private readonly ITenantContext _tenantContext;
+    private readonly IStockReservationService _stockReservationService;
 
     public StockController(
         IStockAdjustmentService stockAdjustmentService,
         IStockReadService stockReadService,
-        ITenantContext tenantContext)
+        ITenantContext tenantContext,
+        IStockReservationService stockReservationService)
     {
         _stockAdjustmentService = stockAdjustmentService;
         _stockReadService = stockReadService;
         _tenantContext = tenantContext;
+        _stockReservationService = stockReservationService;
     }
 
     [HttpGet]
@@ -92,4 +95,106 @@ public sealed class StockController : ControllerBase
                 statusCode: StatusCodes.Status500InternalServerError)
         };
     }
+
+    [HttpPost("availability")]
+    [Authorize(Policy = RolePolicies.RequireStockReservation)]
+    public async Task<ActionResult<IReadOnlyCollection<StockAvailability>>>
+    CheckAvailability(
+        ReserveStockRequestBody body,
+        CancellationToken cancellationToken)
+    {
+        var availability = await _stockReservationService
+            .CheckAvailabilityAsync(
+                new CheckAvailabilityRequest(
+                    body.InventoryOwnerId,
+                    body.Lines
+                        .Select(line => new ReservationLineRequest(
+                            line.ProductId,
+                            line.BatchId,
+                            line.Quantity))
+                        .ToList()),
+                cancellationToken);
+
+        return Ok(availability);
+    }
+
+    [HttpPost("reservations")]
+    [Authorize(Policy = RolePolicies.RequireStockReservation)]
+    public async Task<ActionResult<StockReservationResponse>> Reserve(
+        ReserveStockRequestBody body,
+        CancellationToken cancellationToken)
+    {
+        var result = await _stockReservationService.ReserveAsync(
+            new ReserveStockRequest(
+                body.OrderReference ?? string.Empty,
+                body.InventoryOwnerId,
+                body.Lines
+                    .Select(line => new ReservationLineRequest(
+                        line.ProductId,
+                        line.BatchId,
+                        line.Quantity))
+                    .ToList()),
+            cancellationToken);
+
+        return ReservationResult(result);
+    }
+
+    [HttpPost("reservations/{reservationId:guid}/release")]
+    [Authorize(Policy = RolePolicies.RequireStockReservation)]
+    public async Task<ActionResult<StockReservationResponse>> Release(
+        Guid reservationId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _stockReservationService.ReleaseAsync(
+            reservationId,
+            cancellationToken);
+
+        return ReservationResult(result);
+    }
+
+    [HttpPost("reservations/{reservationId:guid}/confirm")]
+    [Authorize(Policy = RolePolicies.RequireStockReservation)]
+    public async Task<ActionResult<StockReservationResponse>> Confirm(
+        Guid reservationId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _stockReservationService.ConfirmAsync(
+            reservationId,
+            cancellationToken);
+
+        return ReservationResult(result);
+    }
+
+    private ActionResult<StockReservationResponse> ReservationResult(
+        ReserveStockResult result) =>
+        result.Outcome switch
+        {
+            ReservationOutcome.Success =>
+                Ok(result.Reservation),
+
+            ReservationOutcome.InvalidRequest =>
+                BadRequest(new { result.Message }),
+
+            ReservationOutcome.TenantNotAvailable =>
+                Unauthorized(new { result.Message }),
+
+            ReservationOutcome.InventoryOwnerNotFound or
+            ReservationOutcome.ReservationNotFound =>
+                NotFound(new { result.Message }),
+
+            ReservationOutcome.InsufficientStock =>
+                Conflict(new
+                {
+                    result.Message,
+                    result.Shortages
+                }),
+
+            ReservationOutcome.ReservationAlreadyReleased or
+            ReservationOutcome.ReservationAlreadyConfirmed =>
+                Conflict(new { result.Message }),
+
+            _ => Problem(
+                title: "Stock reservation failed.",
+                statusCode: StatusCodes.Status500InternalServerError)
+        };
 }

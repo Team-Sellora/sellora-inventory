@@ -7,6 +7,7 @@ public static class RolePolicies
 {
     public const string RequireStockAdjustment = "RequireStockAdjustment";
     public const string RequireStockRead = "RequireStockRead";
+    public const string RequireStockReservation = "RequireStockReservation";
 
     public static void AddSelloraInventoryPolicies(
     this AuthorizationOptions options)
@@ -16,6 +17,14 @@ public static class RolePolicies
                 HasRole(context, "CompanyAdmin", "AgencyOperator")));
 
         options.AddPolicy(RequireStockRead, policy =>
+            policy.RequireAssertion(context =>
+                HasRole(
+                    context,
+                    "CompanyAdmin",
+                    "AgencyOperator",
+                    "SalesRep")));
+
+        options.AddPolicy(RequireStockReservation, policy =>
             policy.RequireAssertion(context =>
                 HasRole(
                     context,

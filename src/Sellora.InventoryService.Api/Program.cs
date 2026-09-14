@@ -44,8 +44,9 @@ builder.Services
             RoleClaimType = "roles"
         };
 
-        if (builder.Environment.IsDevelopment() ||
-            builder.Environment.IsStaging())
+        // Local developer machines may not have the shared WSO2 CA installed.
+        // Staging and production must validate the WSO2 certificate chain.
+        if (builder.Environment.IsDevelopment())
         {
             options.BackchannelHttpHandler = new HttpClientHandler
             {
@@ -60,7 +61,11 @@ builder.Services.AddAuthorization(options =>
     options.AddSelloraInventoryPolicies());
 
 builder.Services.AddHttpContextAccessor();
-builder.Services.AddScoped<ITenantContext, HttpTenantContext>();
+builder.Services.AddScoped<HttpTenantContext>();
+builder.Services.AddScoped<ITenantContext>(serviceProvider =>
+    serviceProvider.GetRequiredService<HttpTenantContext>());
+builder.Services.AddScoped<ISystemTenantContext>(serviceProvider =>
+    serviceProvider.GetRequiredService<HttpTenantContext>());
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
 
 var connectionString =
@@ -83,6 +88,14 @@ builder.Services.AddScoped<
     IStockReadService,
     StockReadService>();
 
+builder.Services.Configure<StockReservationOptions>(
+    builder.Configuration.GetSection(
+        StockReservationOptions.SectionName));
+
+builder.Services.AddScoped<
+    IStockReservationService,
+    StockReservationService>();
+
 builder.Services.Configure<HierarchyConsumerOptions>(
     builder.Configuration.GetSection(
         HierarchyConsumerOptions.SectionName));
@@ -94,6 +107,11 @@ builder.Services.AddScoped<
 if (!builder.Environment.IsEnvironment("Testing"))
 {
     builder.Services.AddHostedService<HierarchyEventConsumerService>();
+}
+
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services.AddHostedService<ReservationExpirySweeper>();
 }
 
 builder.Services.AddProblemDetails();
