@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Sellora.InventoryService.Api.Authorization;
 using Sellora.InventoryService.Api.Contracts;
+using Sellora.InventoryService.Application.Identity;
 using Sellora.InventoryService.Application.Stock;
 using Sellora.InventoryService.Domain.Tenancy;
 
@@ -160,6 +161,58 @@ public sealed class StockController : ControllerBase
     {
         var result = await _stockReservationService.ConfirmAsync(
             reservationId,
+            cancellationToken);
+
+        return ReservationResult(result);
+    }
+
+    [HttpPost("fulfilment/resolve")]
+    [Authorize(Policy = RolePolicies.RequireStockReservation)]
+    public async Task<ActionResult<StockReservationResponse>> ResolveFulfilment(
+    [FromBody] ResolveFulfilmentRequestBody body,
+    [FromServices] IFulfilmentResolver resolver,
+    [FromServices] ICurrentUserContext currentUser,
+    CancellationToken cancellationToken)
+    {
+        if (_tenantContext.CompanyId is not Guid companyId ||
+            companyId == Guid.Empty)
+        {
+            return Unauthorized(new
+            {
+                Message = "A valid company identifier was not found in the access token."
+            });
+        }
+
+        if (body.AgencyId == Guid.Empty ||
+            body.Lines is null ||
+            body.Lines.Count == 0 ||
+            body.Lines.Any(line => line is null))
+        {
+            return BadRequest(new
+            {
+                Message = "A valid agency and stock lines are required."
+            });
+        }
+
+        var isCompanyAdmin =
+            User.IsInRole("CompanyAdmin") ||
+            User.HasClaim("roles", "CompanyAdmin");
+
+        if (!isCompanyAdmin && currentUser.AgencyId != body.AgencyId)
+        {
+            return Forbid();
+        }
+
+        var result = await resolver.ResolveFulfilmentSourceAsync(
+            new ResolveFulfilmentRequest(
+                body.OrderReference,
+                body.AgencyId,
+                body.Lines
+                    .Select(line => new ReservationLineRequest(
+                        line.ProductId,
+                        line.BatchId,
+                        line.Quantity))
+                    .ToArray()),
             cancellationToken);
 
         return ReservationResult(result);

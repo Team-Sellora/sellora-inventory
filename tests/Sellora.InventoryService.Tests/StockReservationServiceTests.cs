@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 using Sellora.InventoryService.Application.Stock;
 using Sellora.InventoryService.Domain.Entities;
@@ -220,6 +222,380 @@ public sealed class StockReservationServiceTests
                 quantity: 1));
     }
 
+    [Theory]
+    [InlineData(5, 10, false)]
+    [InlineData(1, 10, true)]
+    [InlineData(3, 10, false)]
+    [InlineData(1, 3, true)]
+    public async Task Resolved_source_is_persisted_and_confirmed_against_correct_owner(
+        int agencyQuantity,
+        int companyQuantity,
+        bool expectCompany
+    )
+    {
+        var seed = await SeedStockAsync(agencyQuantity);
+        var companyOwnerId = Guid.NewGuid();
+        var companyStockItemId = Guid.NewGuid();
+
+        await using var db = _fixture.CreateContext(seed.CompanyId);
+
+        var agencyId = await db.InventoryOwners
+            .Where(owner => owner.InventoryOwnerId == seed.OwnerId)
+            .Select(owner => owner.ExternalOwnerId)
+            .SingleAsync();
+
+        db.InventoryOwners.Add(new InventoryOwner
+        {
+            InventoryOwnerId = companyOwnerId,
+            CompanyId = seed.CompanyId,
+            OwnerType = InventoryOwnerType.Company,
+            ExternalOwnerId = seed.CompanyId,
+            DisplayName = "Test company",
+            IsActive = true,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+
+        var companyStock = new StockItem
+        {
+            StockItemId = companyStockItemId,
+            CompanyId = seed.CompanyId,
+            InventoryOwnerId = companyOwnerId,
+            ProductId = seed.ProductIds[0]
+        };
+
+        companyStock.ApplyMovement(new StockMovement
+        {
+            StockMovementId = Guid.NewGuid(),
+            StockItemId = companyStockItemId,
+            MovementType = StockMovementType.Adjustment,
+            OnHandDelta = companyQuantity,
+            ReservedDelta = 0,
+            ActorId = "test-user",
+            Reason = "Seed company stock",
+            OccurredAt = DateTimeOffset.UtcNow
+        });
+
+        db.StockItems.Add(companyStock);
+        await db.SaveChangesAsync();
+
+        var tenant = new TestTenantContext(seed.CompanyId);
+        var resolver = new FulfilmentResolver(
+            new FulfilmentOwnerLookup(db, tenant),
+            CreateService(db, seed.CompanyId),
+            tenant,
+            new RecordingFulfilmentDecisionLogger()
+        );
+
+        var result = await resolver.ResolveFulfilmentSourceAsync(
+            new ResolveFulfilmentRequest(
+                $"ORDER-SOURCE-{Guid.NewGuid():N}",
+                agencyId,
+                new[]
+                {
+                new ReservationLineRequest(seed.ProductIds[0], null, 3)
+                }));
+
+        Assert.Equal(ReservationOutcome.Success, result.Outcome);
+        Assert.NotNull(result.Reservation);
+
+        var reservationId = result.Reservation.ReservationId;
+        var expectedOwnerId = expectCompany ? companyOwnerId : seed.OwnerId;
+        var expectedStockId = expectCompany
+            ? companyStockItemId
+            : seed.StockItemIds[0];
+
+        // A fresh context proves the source was persisted to the database.
+        await using var confirmDb = _fixture.CreateContext(seed.CompanyId);
+
+        var persisted = await confirmDb.StockReservations
+            .AsNoTracking()
+            .Include(reservation => reservation.Lines)
+            .SingleAsync(reservation =>
+                reservation.ReservationId == reservationId);
+
+        Assert.Equal(expectedOwnerId, persisted.InventoryOwnerId);
+        Assert.Equal(expectedOwnerId, result.Reservation.InventoryOwnerId);
+        Assert.Equal(
+            expectedStockId,
+            Assert.Single(persisted.Lines).StockItemId);
+
+        var confirmed = await CreateService(confirmDb, seed.CompanyId)
+            .ConfirmAsync(reservationId);
+
+        Assert.Equal(ReservationOutcome.Success, confirmed.Outcome);
+
+        await using var verifyDb = _fixture.CreateContext(seed.CompanyId);
+
+        var agencyStock = await verifyDb.StockItems
+            .SingleAsync(item => item.StockItemId == seed.StockItemIds[0]);
+        var remainingCompanyStock = await verifyDb.StockItems
+            .SingleAsync(item => item.StockItemId == companyStockItemId);
+
+        Assert.Equal(
+            expectCompany ? agencyQuantity : agencyQuantity - 3,
+            agencyStock.QuantityOnHand);
+        Assert.Equal(
+            expectCompany ? companyQuantity - 3 : companyQuantity,
+            remainingCompanyStock.QuantityOnHand);
+        Assert.Equal(0, agencyStock.QuantityReserved);
+        Assert.Equal(0, remainingCompanyStock.QuantityReserved);
+
+        var sold = Assert.Single(await verifyDb.StockMovements
+            .Where(movement =>
+                movement.ReservationId == reservationId &&
+                movement.MovementType == StockMovementType.Sold)
+            .ToListAsync());
+
+        Assert.Equal(expectedStockId, sold.StockItemId);
+        Assert.Equal(-3, sold.OnHandDelta);
+        Assert.Equal(-3, sold.ReservedDelta);
+        Assert.Equal(persisted.OrderReference, sold.ReferenceId);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Five_line_resolution_never_leaves_mixed_source_reservations(
+    bool companyShort)
+    {
+        var agencyQuantities = new[] { 5, 5, 5, 5, 1 };
+        var seed = await SeedStockAsync(agencyQuantities);
+        var companyOwnerId = Guid.NewGuid();
+        var orderReference = $"ORDER-FIVE-{Guid.NewGuid():N}";
+        var companyStockIds = new List<Guid>();
+
+        await using var db = _fixture.CreateContext(seed.CompanyId);
+
+        var agencyId = await db.InventoryOwners
+            .Where(owner => owner.InventoryOwnerId == seed.OwnerId)
+            .Select(owner => owner.ExternalOwnerId)
+            .SingleAsync();
+
+        db.InventoryOwners.Add(new InventoryOwner
+        {
+            InventoryOwnerId = companyOwnerId,
+            CompanyId = seed.CompanyId,
+            OwnerType = InventoryOwnerType.Company,
+            ExternalOwnerId = seed.CompanyId,
+            DisplayName = "Test company",
+            IsActive = true,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+
+        for (var index = 0; index < seed.ProductIds.Count; index++)
+        {
+            var stock = new StockItem
+            {
+                StockItemId = Guid.NewGuid(),
+                CompanyId = seed.CompanyId,
+                InventoryOwnerId = companyOwnerId,
+                ProductId = seed.ProductIds[index]
+            };
+
+            stock.ApplyMovement(new StockMovement
+            {
+                StockMovementId = Guid.NewGuid(),
+                StockItemId = stock.StockItemId,
+                MovementType = StockMovementType.Adjustment,
+                OnHandDelta = companyShort && index == 4 ? 1 : 5,
+                ReservedDelta = 0,
+                ActorId = "test-user",
+                Reason = "Seed company basket stock",
+                OccurredAt = DateTimeOffset.UtcNow
+            });
+
+            companyStockIds.Add(stock.StockItemId);
+            db.StockItems.Add(stock);
+        }
+
+        await db.SaveChangesAsync();
+
+        var tenant = new TestTenantContext(seed.CompanyId);
+        var resolver = new FulfilmentResolver(
+            new FulfilmentOwnerLookup(db, tenant),
+            CreateService(db, seed.CompanyId),
+            tenant,
+            new RecordingFulfilmentDecisionLogger());
+
+        var result = await resolver.ResolveFulfilmentSourceAsync(
+            new ResolveFulfilmentRequest(
+                orderReference,
+                agencyId,
+                seed.ProductIds
+                    .Select(productId =>
+                        new ReservationLineRequest(productId, null, 3))
+                    .ToArray()));
+
+        await using var verifyDb = _fixture.CreateContext(seed.CompanyId);
+
+        var stockItems = await verifyDb.StockItems
+            .AsNoTracking()
+            .ToListAsync();
+
+        for (var index = 0; index < seed.ProductIds.Count; index++)
+        {
+            var agencyStock = stockItems.Single(item =>
+                item.StockItemId == seed.StockItemIds[index]);
+            var companyStock = stockItems.Single(item =>
+                item.StockItemId == companyStockIds[index]);
+
+            Assert.Equal(agencyQuantities[index], agencyStock.QuantityOnHand);
+            Assert.Equal(0, agencyStock.QuantityReserved);
+
+            Assert.Equal(
+                companyShort && index == 4 ? 1 : 5,
+                companyStock.QuantityOnHand);
+            Assert.Equal(companyShort ? 0 : 3, companyStock.QuantityReserved);
+        }
+
+        var persistedReservations = await verifyDb.StockReservations
+            .AsNoTracking()
+            .Include(reservation => reservation.Lines)
+            .Where(reservation => reservation.OrderReference == orderReference)
+            .ToListAsync();
+
+        var movements = await verifyDb.StockMovements
+            .AsNoTracking()
+            .Where(movement =>
+                movement.ReferenceType == "Order" &&
+                movement.ReferenceId == orderReference)
+            .ToListAsync();
+
+        if (companyShort)
+        {
+            Assert.Equal(ReservationOutcome.InsufficientStock, result.Outcome);
+            Assert.Null(result.Reservation);
+            Assert.Empty(persistedReservations);
+            Assert.Empty(movements);
+
+            var shortage = Assert.Single(result.Shortages);
+            Assert.Equal(seed.ProductIds[4], shortage.ProductId);
+            Assert.Equal(3, shortage.RequestedQuantity);
+            Assert.Equal(1, shortage.AvailableQuantity);
+        }
+        else
+        {
+            Assert.Equal(ReservationOutcome.Success, result.Outcome);
+            Assert.NotNull(result.Reservation);
+            Assert.Equal(companyOwnerId, result.Reservation.InventoryOwnerId);
+
+            var reservation = Assert.Single(persistedReservations);
+            Assert.Equal(companyOwnerId, reservation.InventoryOwnerId);
+            Assert.Equal(5, reservation.Lines.Count);
+
+            Assert.All(reservation.Lines, line =>
+            {
+                Assert.Contains(line.StockItemId, companyStockIds);
+                Assert.Equal(3, line.Quantity);
+            });
+
+            Assert.Equal(5, movements.Count);
+            Assert.All(movements, movement =>
+            {
+                Assert.Equal(reservation.ReservationId, movement.ReservationId);
+                Assert.Contains(movement.StockItemId, companyStockIds);
+                Assert.Equal(StockMovementType.Reserved, movement.MovementType);
+                Assert.Equal(0, movement.OnHandDelta);
+                Assert.Equal(3, movement.ReservedDelta);
+            });
+        }
+    }
+
+    [Fact]
+    public async Task Failed_second_line_does_not_leak_ledger_entries_into_retry()
+    {
+        var seed = await SeedStockAsync(5, 5);
+        var interceptor = new FailSecondReservationUpdateInterceptor();
+
+        var options = new DbContextOptionsBuilder<InventoryDbContext>()
+            .UseNpgsql(_fixture.ConnectionString)
+            .AddInterceptors(interceptor)
+            .Options;
+
+        await using var db = new InventoryDbContext(
+            options, new TestTenantContext(seed.CompanyId));
+
+        var service = CreateService(db, seed.CompanyId);
+        var orderReference = $"ORDER-ROLLBACK-{Guid.NewGuid():N}";
+        var request = new ReserveStockRequest(
+            orderReference,
+            seed.OwnerId,
+            seed.ProductIds
+                .Select(productId =>
+                    new ReservationLineRequest(productId, null, 2))
+                .ToArray());
+
+        var failed = await service.ReserveAsync(request);
+
+        Assert.True(interceptor.FailureInjected);
+        Assert.Equal(ReservationOutcome.InsufficientStock, failed.Outcome);
+        Assert.Null(failed.Reservation);
+
+        Assert.DoesNotContain(
+            db.ChangeTracker.Entries<StockMovement>(),
+            entry => entry.State == EntityState.Added);
+
+        await using (var afterFailure = _fixture.CreateContext(seed.CompanyId))
+        {
+            var stocks = await afterFailure.StockItems.ToListAsync();
+
+            Assert.All(stocks, stock =>
+            {
+                Assert.Equal(5, stock.QuantityOnHand);
+                Assert.Equal(0, stock.QuantityReserved);
+            });
+
+            Assert.False(await afterFailure.StockReservations.AnyAsync(
+                reservation => reservation.OrderReference == orderReference));
+
+            Assert.False(await afterFailure.StockMovements.AnyAsync(
+                movement =>
+                    movement.ReferenceType == "Order" &&
+                    movement.ReferenceId == orderReference));
+        }
+
+        // Reuse the same context to expose leftover tracked ledger entries.
+        var retry = await service.ReserveAsync(request);
+
+        Assert.Equal(ReservationOutcome.Success, retry.Outcome);
+        Assert.NotNull(retry.Reservation);
+
+        await using var verifyDb = _fixture.CreateContext(seed.CompanyId);
+
+        var finalStocks = await verifyDb.StockItems.ToListAsync();
+        Assert.All(finalStocks, stock =>
+        {
+            Assert.Equal(5, stock.QuantityOnHand);
+            Assert.Equal(2, stock.QuantityReserved);
+        });
+
+        var reservation = Assert.Single(
+            await verifyDb.StockReservations
+                .Where(candidate => candidate.OrderReference == orderReference)
+                .ToListAsync());
+
+        Assert.Equal(retry.Reservation.ReservationId, reservation.ReservationId);
+
+        var movements = await verifyDb.StockMovements
+            .Where(movement =>
+                movement.ReferenceType == "Order" &&
+                movement.ReferenceId == orderReference)
+            .ToListAsync();
+
+        Assert.Equal(2, movements.Count);
+        Assert.Equal(
+            2,
+            movements.Select(movement => movement.StockItemId).Distinct().Count());
+
+        Assert.All(movements, movement =>
+        {
+            Assert.Equal(reservation.ReservationId, movement.ReservationId);
+            Assert.Equal(StockMovementType.Reserved, movement.MovementType);
+            Assert.Equal(0, movement.OnHandDelta);
+            Assert.Equal(2, movement.ReservedDelta);
+        });
+    }
+
     private async Task<SeedData> SeedStockAsync(
         params int[] quantities)
     {
@@ -310,6 +686,39 @@ public sealed class StockReservationServiceTests
         Guid OwnerId,
         IReadOnlyList<Guid> ProductIds,
         IReadOnlyList<Guid> StockItemIds);
+
+    private sealed class FailSecondReservationUpdateInterceptor
+    : DbCommandInterceptor
+    {
+        private int _reservationUpdates;
+
+        public bool FailureInjected { get; private set; }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains(
+                "quantity_reserved = quantity_reserved +",
+                StringComparison.Ordinal))
+            {
+                _reservationUpdates++;
+
+                if (_reservationUpdates == 2)
+                {
+                    FailureInjected = true;
+
+                    // Simulate a conditional UPDATE affecting zero rows.
+                    return ValueTask.FromResult(
+                        InterceptionResult<int>.SuppressWithResult(0));
+                }
+            }
+
+            return ValueTask.FromResult(result);
+        }
+    }
 
     private sealed class TestTenantContext : ITenantContext
     {
