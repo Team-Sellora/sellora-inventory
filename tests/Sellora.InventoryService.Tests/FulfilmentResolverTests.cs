@@ -214,6 +214,105 @@ public sealed class FulfilmentResolverTests
         Assert.False(string.IsNullOrWhiteSpace(decision.Reason));
     }
 
+    [Theory]
+    [InlineData("missing-order")]
+    [InlineData("missing-agency")]
+    [InlineData("empty-lines")]
+    [InlineData("null-lines")]
+    [InlineData("null-line")]
+    [InlineData("missing-product")]
+    [InlineData("zero-quantity")]
+    [InlineData("negative-quantity")]
+    [InlineData("quantity-overflow")]
+    public async Task Resolve_rejects_invalid_input_without_reserving(
+    string scenario)
+    {
+        var owners = new OwnerLookupStub();
+        var productId = Guid.NewGuid();
+
+        var request = new ResolveFulfilmentRequest(
+            "ORDER-VALIDATION-001",
+            owners.AgencyId,
+            new[]
+            {
+            new ReservationLineRequest(productId, null, 1)
+            });
+
+        request = scenario switch
+        {
+            "missing-order" => request with
+            {
+                OrderReference = " "
+            },
+            "missing-agency" => request with
+            {
+                AgencyId = Guid.Empty
+            },
+            "empty-lines" => request with
+            {
+                Lines = Array.Empty<ReservationLineRequest>()
+            },
+            "null-lines" => request with
+            {
+                Lines = null!
+            },
+            "null-line" => request with
+            {
+                Lines = new ReservationLineRequest[] { null! }
+            },
+            "missing-product" => request with
+            {
+                Lines = new[]
+                {
+                new ReservationLineRequest(Guid.Empty, null, 1)
+            }
+            },
+            "zero-quantity" => request with
+            {
+                Lines = new[]
+                {
+                new ReservationLineRequest(productId, null, 0)
+            }
+            },
+            "negative-quantity" => request with
+            {
+                Lines = new[]
+                {
+                new ReservationLineRequest(productId, null, -1)
+            }
+            },
+            "quantity-overflow" => request with
+            {
+                Lines = new[]
+                {
+                new ReservationLineRequest(productId, null, int.MaxValue),
+                new ReservationLineRequest(productId, null, 1)
+            }
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(scenario))
+        };
+
+        var reservations = new ReservationServiceStub(_ =>
+            throw new InvalidOperationException(
+                "Invalid input must not reach the reservation service."));
+
+        var decisionLogger = new RecordingFulfilmentDecisionLogger();
+        var resolver = new FulfilmentResolver(
+            owners, reservations, new TenantStub(), decisionLogger);
+
+        var result = await resolver.ResolveFulfilmentSourceAsync(request);
+
+        Assert.Equal(ReservationOutcome.InvalidRequest, result.Outcome);
+        Assert.Null(result.Reservation);
+        Assert.Empty(reservations.Attempts);
+        Assert.Equal(0, owners.CompanyLookups);
+
+        var decision = Assert.Single(decisionLogger.Entries);
+        Assert.Equal("Rejected", decision.Decision);
+        Assert.Contains("InvalidRequest", decision.Reason);
+        Assert.False(string.IsNullOrWhiteSpace(result.Message));
+    }
+
     private static ReserveStockResult SuccessfulReservation(
         ReserveStockRequest request) =>
         ReserveStockResult.Success(new StockReservationResponse(
