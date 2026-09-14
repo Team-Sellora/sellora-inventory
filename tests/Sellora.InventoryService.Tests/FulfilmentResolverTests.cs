@@ -74,6 +74,42 @@ public sealed class FulfilmentResolverTests
             Assert.Equal(lines, attempt.Lines.ToArray());
         });
 
+        Assert.Equal(agencyShort ? 2 : 1, decisionLogger.Entries.Count);
+
+        Assert.All(decisionLogger.Entries, entry =>
+        {
+            Assert.Equal("ORDER-FULFILMENT-001", entry.OrderReference);
+            Assert.Equal(owners.AgencyId, entry.AgencyId);
+            Assert.False(string.IsNullOrWhiteSpace(entry.Reason));
+        });
+
+        if (agencyShort)
+        {
+            var fallback = decisionLogger.Entries[0];
+            Assert.Equal("CompanyFallback", fallback.Decision);
+            Assert.Equal(owners.AgencyOwnerId, fallback.InventoryOwnerId);
+            Assert.Contains("Agency stock cannot fulfil", fallback.Reason);
+        }
+
+        var finalDecision = decisionLogger.Entries[^1];
+
+        if (agencyShort && companyShort)
+        {
+            Assert.Equal("Rejected", finalDecision.Decision);
+            Assert.Null(finalDecision.InventoryOwnerId);
+            Assert.Contains("InsufficientStock", finalDecision.Reason);
+            Assert.Contains(
+                "Neither the agency nor the company",
+                finalDecision.Reason);
+        }
+        else
+        {
+            Assert.Equal("ReservationResolved", finalDecision.Decision);
+            Assert.Equal(
+                agencyShort ? owners.CompanyOwnerId : owners.AgencyOwnerId,
+                finalDecision.InventoryOwnerId);
+        }
+
         if (agencyShort && companyShort)
         {
             Assert.Equal(
@@ -127,6 +163,14 @@ public sealed class FulfilmentResolverTests
         Assert.Same(failure, result);
         Assert.Single(reservations.Attempts);
         Assert.Equal(0, owners.CompanyLookups);
+
+        var decision = Assert.Single(decisionLogger.Entries);
+        Assert.Equal("Rejected", decision.Decision);
+        Assert.Equal("ORDER-ERROR-001", decision.OrderReference);
+        Assert.Equal(owners.AgencyId, decision.AgencyId);
+        Assert.Null(decision.InventoryOwnerId);
+        Assert.Contains(outcome.ToString(), decision.Reason);
+        Assert.Contains("Reservation could not proceed.", decision.Reason);
     }
 
     [Fact]
@@ -161,6 +205,13 @@ public sealed class FulfilmentResolverTests
             result.Reservation.InventoryOwnerId);
         Assert.Single(reservations.Attempts);
         Assert.Equal(0, owners.CompanyLookups);
+
+        var decision = Assert.Single(decisionLogger.Entries);
+        Assert.Equal("ReservationResolved", decision.Decision);
+        Assert.Equal("ORDER-RETRY-001", decision.OrderReference);
+        Assert.Equal(owners.AgencyId, decision.AgencyId);
+        Assert.Equal(owners.CompanyOwnerId, decision.InventoryOwnerId);
+        Assert.False(string.IsNullOrWhiteSpace(decision.Reason));
     }
 
     private static ReserveStockResult SuccessfulReservation(
