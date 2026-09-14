@@ -221,11 +221,15 @@ public sealed class StockReservationServiceTests
     }
 
     [Theory]
-    [InlineData(5, false)]
-    [InlineData(1, true)]
+    [InlineData(5, 10, false)]
+    [InlineData(1, 10, true)]
+    [InlineData(3, 10, false)]
+    [InlineData(1, 3, true)]
     public async Task Resolved_source_is_persisted_and_confirmed_against_correct_owner(
-    int agencyQuantity,
-    bool expectCompany)
+        int agencyQuantity,
+        int companyQuantity,
+        bool expectCompany
+    )
     {
         var seed = await SeedStockAsync(agencyQuantity);
         var companyOwnerId = Guid.NewGuid();
@@ -262,7 +266,7 @@ public sealed class StockReservationServiceTests
             StockMovementId = Guid.NewGuid(),
             StockItemId = companyStockItemId,
             MovementType = StockMovementType.Adjustment,
-            OnHandDelta = 10,
+            OnHandDelta = companyQuantity,
             ReservedDelta = 0,
             ActorId = "test-user",
             Reason = "Seed company stock",
@@ -329,7 +333,7 @@ public sealed class StockReservationServiceTests
             expectCompany ? agencyQuantity : agencyQuantity - 3,
             agencyStock.QuantityOnHand);
         Assert.Equal(
-            expectCompany ? 7 : 10,
+            expectCompany ? companyQuantity - 3 : companyQuantity,
             remainingCompanyStock.QuantityOnHand);
         Assert.Equal(0, agencyStock.QuantityReserved);
         Assert.Equal(0, remainingCompanyStock.QuantityReserved);
