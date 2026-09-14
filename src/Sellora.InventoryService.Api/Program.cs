@@ -44,8 +44,10 @@ builder.Services
             RoleClaimType = "roles"
         };
 
-        if (builder.Environment.IsDevelopment() ||
-            builder.Environment.IsStaging())
+        // This is only for local developer machines that have not installed
+        // the shared WSO2 CA. Staging and production must validate the WSO2
+        // certificate chain normally.
+        if (builder.Environment.IsDevelopment())
         {
             options.BackchannelHttpHandler = new HttpClientHandler
             {
