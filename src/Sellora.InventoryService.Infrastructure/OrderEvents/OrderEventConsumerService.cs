@@ -66,10 +66,14 @@ public sealed class OrderEventConsumerService : BackgroundService
                     continue;
                 }
 
-                if (await ProcessAsync(result.Message.Value, stoppingToken))
+                // Retry the same event before consuming another.
+                // Committing a later offset would otherwise skip the failed event.
+                while (!await ProcessAsync(result.Message.Value, stoppingToken))
                 {
-                    consumer.Commit(result);
+                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
                 }
+
+                consumer.Commit(result);
             }
         }
         catch (OperationCanceledException)
@@ -123,6 +127,11 @@ public sealed class OrderEventConsumerService : BackgroundService
             await handler.HandleAsync(@event, cancellationToken);
 
             return true;
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (JsonException exception)
         {
