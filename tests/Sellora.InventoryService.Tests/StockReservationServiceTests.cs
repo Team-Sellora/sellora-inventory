@@ -276,7 +276,9 @@ public sealed class StockReservationServiceTests
         var resolver = new FulfilmentResolver(
             new FulfilmentOwnerLookup(db, tenant),
             CreateService(db, seed.CompanyId),
-            tenant);
+            tenant,
+            new RecordingFulfilmentDecisionLogger()
+        );
 
         var result = await resolver.ResolveFulfilmentSourceAsync(
             new ResolveFulfilmentRequest(

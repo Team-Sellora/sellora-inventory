@@ -7,25 +7,50 @@ public sealed class FulfilmentResolver : IFulfilmentResolver
     private readonly IFulfilmentOwnerLookup _ownerLookup;
     private readonly IStockReservationService _reservationService;
     private readonly ITenantContext _tenantContext;
+    private readonly IFulfilmentDecisionLogger _decisionLogger;
 
     public FulfilmentResolver(
         IFulfilmentOwnerLookup ownerLookup,
         IStockReservationService reservationService,
-        ITenantContext tenantContext)
+        ITenantContext tenantContext,
+        IFulfilmentDecisionLogger decisionLogger)
     {
         _ownerLookup = ownerLookup;
         _reservationService = reservationService;
         _tenantContext = tenantContext;
+        _decisionLogger = decisionLogger;
     }
 
     public async Task<ReserveStockResult> ResolveFulfilmentSourceAsync(
         ResolveFulfilmentRequest request,
         CancellationToken cancellationToken = default)
     {
+        ReserveStockResult Finish(ReserveStockResult result)
+        {
+            var succeeded = result.Outcome == ReservationOutcome.Success;
+
+            _decisionLogger.LogDecision(
+                request?.OrderReference?.Trim() ?? string.Empty,
+                request?.AgencyId ?? Guid.Empty,
+                result.Reservation?.InventoryOwnerId,
+                succeeded ? "ReservationResolved" : "Rejected",
+                succeeded
+                    ? "Reservation service returned the recorded owner for this order."
+                    : $"{result.Outcome}: {result.Message}");
+
+            return result;
+        }
+
+        ReserveStockResult Reject(
+            ReservationOutcome outcome,
+            string message,
+            IReadOnlyCollection<ReservationShortage>? shortages = null) =>
+            Finish(ReserveStockResult.Failure(outcome, message, shortages));
+
         if (_tenantContext.CompanyId is not Guid companyId ||
             companyId == Guid.Empty)
         {
-            return ReserveStockResult.Failure(
+            return Reject(
                 ReservationOutcome.TenantNotAvailable,
                 "A company identifier is required.");
         }
@@ -36,7 +61,7 @@ public sealed class FulfilmentResolver : IFulfilmentResolver
             request.Lines is null ||
             request.Lines.Count == 0)
         {
-            return ReserveStockResult.Failure(
+            return Reject(
                 ReservationOutcome.InvalidRequest,
                 "Order reference, agency and stock lines are required.");
         }
@@ -48,7 +73,7 @@ public sealed class FulfilmentResolver : IFulfilmentResolver
             line.ProductId == Guid.Empty ||
             line.Quantity <= 0))
         {
-            return ReserveStockResult.Failure(
+            return Reject(
                 ReservationOutcome.InvalidRequest,
                 "Every stock line requires a product and positive quantity.");
         }
@@ -58,7 +83,7 @@ public sealed class FulfilmentResolver : IFulfilmentResolver
             .Any(group =>
                 group.Sum(line => (long)line.Quantity) > int.MaxValue))
         {
-            return ReserveStockResult.Failure(
+            return Reject(
                 ReservationOutcome.InvalidRequest,
                 "The combined quantity for a stock line is too large.");
         }
@@ -69,7 +94,7 @@ public sealed class FulfilmentResolver : IFulfilmentResolver
 
         if (agencyOwnerId is null)
         {
-            return ReserveStockResult.Failure(
+            return Reject(
                 ReservationOutcome.InventoryOwnerNotFound,
                 "The agency inventory owner was not found.");
         }
@@ -86,15 +111,24 @@ public sealed class FulfilmentResolver : IFulfilmentResolver
         // Only a stock shortage permits fallback to company stock.
         if (agencyResult.Outcome != ReservationOutcome.InsufficientStock)
         {
-            return agencyResult;
+            return Finish(agencyResult);
         }
+
+        _decisionLogger.LogDecision(
+            orderReference,
+            request.AgencyId,
+            agencyOwnerId.Value,
+            "CompanyFallback",
+            "Agency stock cannot fulfil the entire order; trying the complete " +
+            "basket against company stock."
+        );
 
         var companyOwnerId = await _ownerLookup.FindCompanyOwnerAsync(
             cancellationToken);
 
         if (companyOwnerId is null)
         {
-            return ReserveStockResult.Failure(
+            return Reject(
                 ReservationOutcome.InventoryOwnerNotFound,
                 "The company inventory owner was not found.");
         }
@@ -109,13 +143,13 @@ public sealed class FulfilmentResolver : IFulfilmentResolver
 
         if (companyResult.Outcome == ReservationOutcome.InsufficientStock)
         {
-            return ReserveStockResult.Failure(
+            return Reject(
                 ReservationOutcome.InsufficientStock,
                 "Neither the agency nor the company can fulfil the entire " +
                 "order. Reported shortages are for company stock.",
                 companyResult.Shortages);
         }
 
-        return companyResult;
+        return Finish(companyResult);
     }
 }

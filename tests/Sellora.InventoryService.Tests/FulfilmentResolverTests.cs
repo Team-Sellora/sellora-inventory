@@ -54,8 +54,9 @@ public sealed class FulfilmentResolverTests
                 : SuccessfulReservation(request);
         });
 
+        var decisionLogger = new RecordingFulfilmentDecisionLogger();
         var resolver = new FulfilmentResolver(
-            owners, reservations, new TenantStub());
+            owners, reservations, new TenantStub(), decisionLogger);
 
         var result = await resolver.ResolveFulfilmentSourceAsync(
             new ResolveFulfilmentRequest(
@@ -110,8 +111,9 @@ public sealed class FulfilmentResolverTests
             outcome, "Reservation could not proceed.");
 
         var reservations = new ReservationServiceStub(_ => failure);
+        var decisionLogger = new RecordingFulfilmentDecisionLogger();
         var resolver = new FulfilmentResolver(
-            owners, reservations, new TenantStub());
+            owners, reservations, new TenantStub(), decisionLogger);
 
         var result = await resolver.ResolveFulfilmentSourceAsync(
             new ResolveFulfilmentRequest(
@@ -144,8 +146,9 @@ public sealed class FulfilmentResolverTests
         // ReserveAsync may return an existing company reservation when
         // the resolver retries the same order reference against the agency.
         var reservations = new ReservationServiceStub(_ => existing);
+        var decisionLogger = new RecordingFulfilmentDecisionLogger();
         var resolver = new FulfilmentResolver(
-            owners, reservations, new TenantStub());
+            owners, reservations, new TenantStub(), decisionLogger);
 
         var result = await resolver.ResolveFulfilmentSourceAsync(
             new ResolveFulfilmentRequest(
