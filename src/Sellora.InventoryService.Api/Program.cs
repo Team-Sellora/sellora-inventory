@@ -10,6 +10,7 @@ using Sellora.InventoryService.Application.Identity;
 using Sellora.InventoryService.Application.Stock;
 using Sellora.InventoryService.Domain.Tenancy;
 using Sellora.InventoryService.Infrastructure.HierarchyEvents;
+using Sellora.InventoryService.Infrastructure.OrderEvents;
 using Sellora.InventoryService.Infrastructure.Persistence;
 using Sellora.InventoryService.Infrastructure.Stock;
 using Serilog;
@@ -115,6 +116,10 @@ builder.Services.Configure<HierarchyConsumerOptions>(
 builder.Services.AddScoped<
     IHierarchyEventHandler,
     InventoryOwnerHierarchyEventHandler>();
+
+builder.Services.AddScoped<
+    IOrderEventHandler,
+    OrderEventHandler>();
 
 if (!builder.Environment.IsEnvironment("Testing"))
 {
