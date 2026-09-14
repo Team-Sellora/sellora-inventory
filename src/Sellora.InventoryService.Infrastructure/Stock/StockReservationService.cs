@@ -182,6 +182,7 @@ public sealed class StockReservationService : IStockReservationService
             if (stockItem is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
+                DetachReservationAttempt(reservation.ReservationId);
 
                 return await InsufficientStockAsync(
                     request.InventoryOwnerId,
@@ -205,6 +206,7 @@ public sealed class StockReservationService : IStockReservationService
             if (affected != 1)
             {
                 await transaction.RollbackAsync(cancellationToken);
+                DetachReservationAttempt(reservation.ReservationId);
 
                 return await InsufficientStockAsync(
                     request.InventoryOwnerId,
@@ -247,9 +249,10 @@ public sealed class StockReservationService : IStockReservationService
             return ReserveStockResult.Success(ToResponse(reservation));
         }
         catch (DbUpdateException exception)
-            when (IsDuplicateOrderReference(exception))
+     when (IsDuplicateOrderReference(exception))
         {
             await transaction.RollbackAsync(cancellationToken);
+            DetachReservationAttempt(reservation.ReservationId);
 
             var persistedReservation = await FindByOrderReferenceAsync(
                 request.OrderReference,
@@ -393,6 +396,39 @@ public sealed class StockReservationService : IStockReservationService
         await transaction.CommitAsync(cancellationToken);
 
         return ReserveStockResult.Success(ToResponse(reservation));
+    }
+
+    private void DetachReservationAttempt(Guid reservationId)
+    {
+        foreach (var entry in _db.ChangeTracker
+            .Entries<StockMovement>()
+            .Where(entry =>
+                entry.State == EntityState.Added &&
+                entry.Entity.ReservationId == reservationId)
+            .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
+
+        foreach (var entry in _db.ChangeTracker
+            .Entries<StockReservationLine>()
+            .Where(entry =>
+                entry.State == EntityState.Added &&
+                entry.Entity.ReservationId == reservationId)
+            .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
+
+        foreach (var entry in _db.ChangeTracker
+            .Entries<StockReservation>()
+            .Where(entry =>
+                entry.State == EntityState.Added &&
+                entry.Entity.ReservationId == reservationId)
+            .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
     }
 
     private static bool IsDuplicateOrderReference(

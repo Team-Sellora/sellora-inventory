@@ -100,6 +100,10 @@ builder.Services.AddScoped<
     IFulfilmentOwnerLookup,
     FulfilmentOwnerLookup>();
 
+builder.Services.AddScoped<
+    IFulfilmentResolver,
+    FulfilmentResolver>();
+
 builder.Services.Configure<HierarchyConsumerOptions>(
     builder.Configuration.GetSection(
         HierarchyConsumerOptions.SectionName));
