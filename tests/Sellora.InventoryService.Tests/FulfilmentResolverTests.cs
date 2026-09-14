@@ -96,6 +96,70 @@ public sealed class FulfilmentResolverTests
         }
     }
 
+    [Theory]
+    [InlineData(ReservationOutcome.InvalidRequest)]
+    [InlineData(ReservationOutcome.TenantNotAvailable)]
+    [InlineData(ReservationOutcome.InventoryOwnerNotFound)]
+    [InlineData(ReservationOutcome.ReservationAlreadyReleased)]
+    [InlineData(ReservationOutcome.ReservationAlreadyConfirmed)]
+    public async Task Resolve_does_not_fallback_for_non_stock_errors(
+    ReservationOutcome outcome)
+    {
+        var owners = new OwnerLookupStub();
+        var failure = ReserveStockResult.Failure(
+            outcome, "Reservation could not proceed.");
+
+        var reservations = new ReservationServiceStub(_ => failure);
+        var resolver = new FulfilmentResolver(
+            owners, reservations, new TenantStub());
+
+        var result = await resolver.ResolveFulfilmentSourceAsync(
+            new ResolveFulfilmentRequest(
+                "ORDER-ERROR-001",
+                owners.AgencyId,
+                new[]
+                {
+                new ReservationLineRequest(Guid.NewGuid(), null, 1)
+                }));
+
+        Assert.Same(failure, result);
+        Assert.Single(reservations.Attempts);
+        Assert.Equal(0, owners.CompanyLookups);
+    }
+
+    [Fact]
+    public async Task Resolve_preserves_existing_company_reservation_on_retry()
+    {
+        var owners = new OwnerLookupStub();
+        var lines = new[]
+        {
+        new ReservationLineRequest(Guid.NewGuid(), null, 3)
+    };
+
+        var existing = SuccessfulReservation(new ReserveStockRequest(
+            "ORDER-RETRY-001",
+            owners.CompanyOwnerId,
+            lines));
+
+        // ReserveAsync may return an existing company reservation when
+        // the resolver retries the same order reference against the agency.
+        var reservations = new ReservationServiceStub(_ => existing);
+        var resolver = new FulfilmentResolver(
+            owners, reservations, new TenantStub());
+
+        var result = await resolver.ResolveFulfilmentSourceAsync(
+            new ResolveFulfilmentRequest(
+                "ORDER-RETRY-001", owners.AgencyId, lines));
+
+        Assert.Same(existing, result);
+        Assert.NotNull(result.Reservation);
+        Assert.Equal(
+            owners.CompanyOwnerId,
+            result.Reservation.InventoryOwnerId);
+        Assert.Single(reservations.Attempts);
+        Assert.Equal(0, owners.CompanyLookups);
+    }
+
     private static ReserveStockResult SuccessfulReservation(
         ReserveStockRequest request) =>
         ReserveStockResult.Success(new StockReservationResponse(
