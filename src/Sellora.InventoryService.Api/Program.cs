@@ -96,6 +96,10 @@ builder.Services.AddScoped<
     IStockReservationService,
     StockReservationService>();
 
+builder.Services.AddScoped<
+    IFulfilmentOwnerLookup,
+    FulfilmentOwnerLookup>();
+
 builder.Services.Configure<HierarchyConsumerOptions>(
     builder.Configuration.GetSection(
         HierarchyConsumerOptions.SectionName));
