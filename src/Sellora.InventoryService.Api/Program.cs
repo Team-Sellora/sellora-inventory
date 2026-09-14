@@ -101,6 +101,10 @@ builder.Services.AddScoped<
     FulfilmentOwnerLookup>();
 
 builder.Services.AddScoped<
+    IFulfilmentDecisionLogger,
+    FulfilmentDecisionLogger>();
+
+builder.Services.AddScoped<
     IFulfilmentResolver,
     FulfilmentResolver>();
 
