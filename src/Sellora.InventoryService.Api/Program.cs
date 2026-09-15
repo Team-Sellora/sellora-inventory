@@ -12,6 +12,7 @@ using Sellora.InventoryService.Domain.Tenancy;
 using Sellora.InventoryService.Infrastructure.HierarchyEvents;
 using Sellora.InventoryService.Infrastructure.OrderEvents;
 using Sellora.InventoryService.Infrastructure.Persistence;
+using Sellora.InventoryService.Infrastructure.Persistence.Seeding;
 using Sellora.InventoryService.Infrastructure.Stock;
 using Serilog;
 
@@ -47,7 +48,7 @@ builder.Services
 
         // Local developer machines may not have the shared WSO2 CA installed.
         // Staging and production must validate the WSO2 certificate chain.
-        if (builder.Environment.IsDevelopment())
+        if (builder.Environment.IsDevelopment() || builder.Environment.IsStaging())
         {
             options.BackchannelHttpHandler = new HttpClientHandler
             {
@@ -189,6 +190,11 @@ if (!app.Environment.IsEnvironment("Testing"))
         .GetRequiredService<InventoryDbContext>();
 
     await db.Database.MigrateAsync();
+
+    if (app.Environment.IsStaging())
+    {
+        await DevelopmentInventorySeeder.SeedAsync(db);
+    }
 }
 
 if (app.Environment.IsDevelopment())
