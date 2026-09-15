@@ -17,6 +17,7 @@ public class InventoryDbContext : DbContext
     }
 
     public DbSet<InventoryOwner> InventoryOwners => Set<InventoryOwner>();
+    public DbSet<ProcessedInventoryEvent> ProcessedInventoryEvents => Set<ProcessedInventoryEvent>();
     public DbSet<StockItem> StockItems => Set<StockItem>();
     public DbSet<StockMovement> StockMovements => Set<StockMovement>();
 
@@ -63,6 +64,10 @@ public class InventoryDbContext : DbContext
 
         modelBuilder.ApplyConfigurationsFromAssembly(
             typeof(InventoryDbContext).Assembly);
+
+        modelBuilder.Entity<ProcessedInventoryEvent>()
+            .HasQueryFilter(e => _tenantContext.CompanyId != null &&
+                e.CompanyId == _tenantContext.CompanyId);
 
         modelBuilder.Entity<InventoryOwner>()
             .HasQueryFilter(owner =>

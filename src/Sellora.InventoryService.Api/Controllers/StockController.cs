@@ -28,7 +28,6 @@ public sealed class StockController : ControllerBase
         _tenantContext = tenantContext;
         _stockReservationService = stockReservationService;
     }
-
     [HttpGet]
     [Authorize(Policy = RolePolicies.RequireStockRead)]
     public async Task<ActionResult<IReadOnlyCollection<StockItemResponse>>> GetStock(

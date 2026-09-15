@@ -303,7 +303,16 @@ public sealed class StockReservationService : IStockReservationService
                 "A company identifier is required.");
         }
 
+        // Event handlers own the transaction so the event receipt and stock
+        // changes commit together. Direct API callers still get a transaction.
+        await using var transaction = _db.Database.CurrentTransaction is null
+            ? await _db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+
+        // Serialize confirmation, release and expiry for this reservation.
+        // Stock balance checks alone cannot prevent consuming another order's hold.
         var reservation = await _db.StockReservations
+            .FromSqlInterpolated($"SELECT * FROM stock_reservation WHERE reservation_id = {reservationId} AND company_id = {_tenantContext.CompanyId.Value} FOR UPDATE")
             .Include(candidate => candidate.Lines)
             .SingleOrDefaultAsync(
                 candidate => candidate.ReservationId == reservationId,
@@ -315,6 +324,9 @@ public sealed class StockReservationService : IStockReservationService
                 ReservationOutcome.ReservationNotFound,
                 "The stock reservation was not found.");
         }
+
+        // A scoped context may already track an older reservation state.
+        await _db.Entry(reservation).ReloadAsync(cancellationToken);
 
         if (reservation.Status == ReservationStatus.Confirmed)
         {
@@ -332,10 +344,7 @@ public sealed class StockReservationService : IStockReservationService
 
         var now = DateTimeOffset.UtcNow;
 
-        await using var transaction =
-            await _db.Database.BeginTransactionAsync(cancellationToken);
-
-        foreach (var line in reservation.Lines)
+        foreach (var line in reservation.Lines.OrderBy(line => line.StockItemId))
         {
             var affected = movementType == StockMovementType.Sold
                 ? await _db.Database.ExecuteSqlInterpolatedAsync(
@@ -363,7 +372,13 @@ public sealed class StockReservationService : IStockReservationService
 
             if (affected != 1)
             {
-                await transaction.RollbackAsync(cancellationToken);
+                if (transaction is not null)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                }
+                // An event caller treats this failure as permanent and rolls
+                // back its enclosing transaction, including the receipt.
+                DetachReservationAttempt(reservation.ReservationId);
 
                 return ReserveStockResult.Failure(
                     ReservationOutcome.InsufficientStock,
@@ -393,7 +408,10 @@ public sealed class StockReservationService : IStockReservationService
         reservation.CompletedAt = now;
 
         await _db.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
 
         return ReserveStockResult.Success(ToResponse(reservation));
     }
