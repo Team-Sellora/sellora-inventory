@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Sellora.InventoryService.Application.Events;
+using Sellora.InventoryService.Infrastructure.Kafka;
 
 namespace Sellora.InventoryService.Infrastructure.OrderEvents;
 
@@ -32,24 +33,35 @@ public sealed class OrderEventConsumerService(
             settings.DeadLetterTopic == settings.DeliveryTopic)
             throw new InvalidOperationException("Inventory event topics and consumer group must be configured and distinct.");
 
-        using var producer = new ProducerBuilder<string, string>(new ProducerConfig
+        var producerConfig = new ProducerConfig
         {
             BootstrapServers = settings.BootstrapServers,
             EnableIdempotence = true,
             Acks = Acks.All,
             MessageTimeoutMs = 10000
-        }).Build();
+        };
+
+        KafkaSaslConfigurator.Apply(
+            producerConfig, settings.SaslUsername, settings.SaslPassword);
+
+        using var producer = new ProducerBuilder<string, string>(producerConfig).Build();
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            using var consumer = new ConsumerBuilder<string, string>(new ConsumerConfig
+            var consumerConfig = new ConsumerConfig
             {
                 BootstrapServers = settings.BootstrapServers,
                 GroupId = settings.OrderConsumerGroupId,
                 AutoOffsetReset = AutoOffsetReset.Earliest,
                 EnableAutoCommit = false,
                 EnableAutoOffsetStore = false
-            }).Build();
+            };
+
+            KafkaSaslConfigurator.Apply(
+                consumerConfig, settings.SaslUsername, settings.SaslPassword);
+
+            using var consumer = new ConsumerBuilder<string, string>(consumerConfig).Build();
+
 
             try
             {

@@ -5,6 +5,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Sellora.InventoryService.Application.Events;
+using Sellora.InventoryService.Infrastructure.Kafka;
+using static Sellora.InventoryService.Infrastructure.Kafka.KafkaSaslConfigurator;
 
 namespace Sellora.InventoryService.Infrastructure.HierarchyEvents;
 
@@ -45,8 +47,12 @@ public sealed class HierarchyEventConsumerService : BackgroundService
             EnableAutoCommit = false
         };
 
+        KafkaSaslConfigurator.Apply(
+            consumerConfig, _options.SaslUsername, _options.SaslPassword);
+
         using var consumer = new ConsumerBuilder<string, string>(
             consumerConfig).Build();
+
 
         consumer.Subscribe(_options.HierarchyTopic);
 

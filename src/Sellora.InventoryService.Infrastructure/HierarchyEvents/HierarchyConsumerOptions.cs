@@ -10,4 +10,8 @@ public sealed class HierarchyConsumerOptions
 
     public string ConsumerGroupId { get; init; } =
         "sellora.inventory.hierarchy.v1";
+
+    public string? SaslUsername { get; init; }
+
+    public string? SaslPassword { get; init; }
 }

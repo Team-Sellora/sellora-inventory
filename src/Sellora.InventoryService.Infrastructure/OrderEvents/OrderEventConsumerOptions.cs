@@ -14,4 +14,9 @@ public sealed class OrderEventConsumerOptions
 
     public string OrderConsumerGroupId { get; init; } =
         "sellora.inventory.order.v1";
+
+    public string? SaslUsername { get; init; }
+
+    public string? SaslPassword { get; init; }
+
 }
