@@ -666,7 +666,8 @@ public sealed class StockReservationServiceTests
             Options.Create(new StockReservationOptions
             {
                 TtlMinutes = 15
-            }));
+            }),
+            new LowStockDetectionService(db));
 
     private static ReserveStockRequest Request(
         string orderReference,

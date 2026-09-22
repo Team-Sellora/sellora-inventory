@@ -9,6 +9,7 @@ public sealed class OrderEventConsumerOptions
     public string OrderTopic { get; init; } = "sellora.order.v1";
 
     public string DeliveryTopic { get; init; } = "sellora.delivery.v1";
+    public string InventoryTopic { get; init; } = "sellora.inventory.v1";
 
     public string DeadLetterTopic { get; init; } = "sellora.inventory.dead-letter.v1";
 

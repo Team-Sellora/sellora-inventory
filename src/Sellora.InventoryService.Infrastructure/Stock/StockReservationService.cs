@@ -14,17 +14,20 @@ public sealed class StockReservationService : IStockReservationService
     private readonly InventoryDbContext _db;
     private readonly ITenantContext _tenantContext;
     private readonly TimeSpan _reservationTtl;
+    private readonly LowStockDetectionService _lowStock;
 
     public StockReservationService(
         InventoryDbContext db,
         ITenantContext tenantContext,
-        IOptions<StockReservationOptions> options)
+        IOptions<StockReservationOptions> options,
+        LowStockDetectionService lowStock)
     {
         _db = db;
         _tenantContext = tenantContext;
 
         _reservationTtl = TimeSpan.FromMinutes(
             Math.Max(1, options.Value.TtlMinutes));
+        _lowStock = lowStock;
     }
 
     public async Task<IReadOnlyCollection<StockAvailability>>
@@ -237,6 +240,7 @@ public sealed class StockReservationService : IStockReservationService
                 Reason = "Stock reserved for order.",
                 OccurredAt = now
             });
+
         }
 
         _db.StockReservations.Add(reservation);
@@ -402,6 +406,9 @@ public sealed class StockReservationService : IStockReservationService
                     : "Stock reservation released.",
                 OccurredAt = now
             });
+
+            if (movementType == StockMovementType.Sold)
+                await _lowStock.EvaluateAfterDecrementAsync(line.StockItemId, cancellationToken);
         }
 
         reservation.Status = completedStatus;
