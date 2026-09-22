@@ -250,3 +250,22 @@ public sealed class StockController : ControllerBase
                 statusCode: StatusCodes.Status500InternalServerError)
         };
 }
+using Sellora.InventoryService.Infrastructure.Stock;
+    [HttpPut("{stockItemId:guid}/reorder-threshold")]
+    [Authorize(Policy = RolePolicies.RequireStockAdjustment)]
+    public async Task<ActionResult<StockItemResponse>> UpdateReorderThreshold(
+        Guid stockItemId,
+        UpdateReorderThresholdRequestBody body,
+        [FromServices] StockThresholdService thresholds,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var item = await thresholds.UpdateAsync(
+                new UpdateReorderThresholdRequest(stockItemId, body.ReorderThreshold), cancellationToken);
+            return item is null ? NotFound() : Ok(item);
+        }
+        catch (ArgumentOutOfRangeException) { return BadRequest(new { Message = "Reorder threshold cannot be negative." }); }
+        catch (UnauthorizedAccessException) { return Forbid(); }
+    }
+
