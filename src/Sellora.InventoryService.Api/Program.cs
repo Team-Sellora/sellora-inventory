@@ -232,4 +232,3 @@ app.MapGet("/whoami", (HttpContext context) =>
 app.Run();
 
 public partial class Program;
-builder.Services.AddScoped<StockThresholdService>();
