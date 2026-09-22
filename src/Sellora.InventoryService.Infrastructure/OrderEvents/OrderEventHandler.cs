@@ -7,13 +7,15 @@ using Sellora.InventoryService.Domain.Entities;
 using Sellora.InventoryService.Domain.Inventory;
 using Sellora.InventoryService.Domain.Tenancy;
 using Sellora.InventoryService.Infrastructure.Persistence;
+using Sellora.InventoryService.Infrastructure.Stock;
 
 namespace Sellora.InventoryService.Infrastructure.OrderEvents;
 
 public sealed class OrderEventHandler(
     IStockReservationService reservationService,
     ISystemTenantContext systemTenantContext,
-    InventoryDbContext db) : IOrderEventHandler
+    InventoryDbContext db,
+    LowStockDetectionService lowStock) : IOrderEventHandler
 {
     public Task HandleAsync(OrderConfirmedEvent e, CancellationToken cancellationToken = default)
     {
@@ -150,6 +152,7 @@ public sealed class OrderEventHandler(
                 ReferenceType = "Return", ReferenceId = e.ReturnReference.Trim(),
                 Reason = "Stock restored for accepted return.", OccurredAt = DateTimeOffset.UtcNow
             });
+            lowStock.RearmIfRestocked(stock);
         }
     }
 

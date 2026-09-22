@@ -20,6 +20,7 @@ public class InventoryDbContext : DbContext
     public DbSet<ProcessedInventoryEvent> ProcessedInventoryEvents => Set<ProcessedInventoryEvent>();
     public DbSet<StockItem> StockItems => Set<StockItem>();
     public DbSet<StockMovement> StockMovements => Set<StockMovement>();
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     public override int SaveChanges()
     {
@@ -68,6 +69,9 @@ public class InventoryDbContext : DbContext
         modelBuilder.Entity<ProcessedInventoryEvent>()
             .HasQueryFilter(e => _tenantContext.CompanyId != null &&
                 e.CompanyId == _tenantContext.CompanyId);
+
+        modelBuilder.Entity<OutboxMessage>()
+            .HasQueryFilter(e => _tenantContext.CompanyId != null && e.CompanyId == _tenantContext.CompanyId);
 
         modelBuilder.Entity<InventoryOwner>()
             .HasQueryFilter(owner =>

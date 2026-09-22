@@ -5,6 +5,7 @@ using Sellora.InventoryService.Api.Contracts;
 using Sellora.InventoryService.Application.Identity;
 using Sellora.InventoryService.Application.Stock;
 using Sellora.InventoryService.Domain.Tenancy;
+using Sellora.InventoryService.Infrastructure.Stock;
 
 namespace Sellora.InventoryService.Api.Controllers;
 
@@ -33,6 +34,7 @@ public sealed class StockController : ControllerBase
     public async Task<ActionResult<IReadOnlyCollection<StockItemResponse>>> GetStock(
         [FromQuery] Guid? productId,
         [FromQuery] Guid? inventoryOwnerId,
+        [FromQuery] bool lowStock,
         CancellationToken cancellationToken)
     {
         if (_tenantContext.CompanyId is null)
@@ -44,7 +46,7 @@ public sealed class StockController : ControllerBase
         }
 
         var stock = await _stockReadService.GetStockAsync(
-            new StockListQuery(productId, inventoryOwnerId),
+            new StockListQuery(productId, inventoryOwnerId, lowStock),
             cancellationToken);
 
         return Ok(stock);
@@ -94,6 +96,24 @@ public sealed class StockController : ControllerBase
                 title: "Stock adjustment failed.",
                 statusCode: StatusCodes.Status500InternalServerError)
         };
+    }
+
+    [HttpPut("{stockItemId:guid}/reorder-threshold")]
+    [Authorize(Policy = RolePolicies.RequireStockAdjustment)]
+    public async Task<ActionResult<StockItemResponse>> UpdateReorderThreshold(
+        Guid stockItemId,
+        UpdateReorderThresholdRequestBody body,
+        [FromServices] StockThresholdService thresholds,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var item = await thresholds.UpdateAsync(
+                new UpdateReorderThresholdRequest(stockItemId, body.ReorderThreshold), cancellationToken);
+            return item is null ? NotFound() : Ok(item);
+        }
+        catch (ArgumentOutOfRangeException) { return BadRequest(new { Message = "Reorder threshold cannot be negative." }); }
+        catch (UnauthorizedAccessException) { return Forbid(); }
     }
 
     [HttpPost("availability")]

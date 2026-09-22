@@ -49,6 +49,12 @@ public sealed class StockReadService : IStockReadService
                 stockItem.InventoryOwnerId == query.InventoryOwnerId.Value);
         }
 
+        if (query.LowStockOnly)
+        {
+            stockItems = stockItems.Where(stockItem => stockItem.ReorderThreshold != null &&
+                stockItem.QuantityOnHand - stockItem.QuantityReserved < stockItem.ReorderThreshold);
+        }
+
         stockItems = ApplyRoleScope(stockItems);
 
         var results = await stockItems

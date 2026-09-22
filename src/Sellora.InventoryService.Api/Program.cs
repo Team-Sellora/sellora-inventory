@@ -10,6 +10,7 @@ using Sellora.InventoryService.Application.Identity;
 using Sellora.InventoryService.Application.Stock;
 using Sellora.InventoryService.Domain.Tenancy;
 using Sellora.InventoryService.Infrastructure.HierarchyEvents;
+using Sellora.InventoryService.Infrastructure.Outbox;
 using Sellora.InventoryService.Infrastructure.OrderEvents;
 using Sellora.InventoryService.Infrastructure.Persistence;
 using Sellora.InventoryService.Infrastructure.Persistence.Seeding;
@@ -97,6 +98,8 @@ builder.Services.Configure<StockReservationOptions>(
 builder.Services.AddScoped<
     IStockReservationService,
     StockReservationService>();
+builder.Services.AddScoped<LowStockDetectionService>();
+builder.Services.AddScoped<StockThresholdService>();
 
 builder.Services.AddScoped<
     IFulfilmentOwnerLookup,
@@ -139,6 +142,7 @@ if (!builder.Environment.IsEnvironment("Testing"))
 if (!builder.Environment.IsEnvironment("Testing"))
 {
     builder.Services.AddHostedService<ReservationExpirySweeper>();
+    builder.Services.AddHostedService<OutboxRelayService>();
 }
 
 builder.Services.AddProblemDetails();
