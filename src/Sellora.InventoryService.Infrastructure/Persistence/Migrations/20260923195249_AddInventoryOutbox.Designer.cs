@@ -12,7 +12,7 @@ using Sellora.InventoryService.Infrastructure.Persistence;
 namespace Sellora.InventoryService.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(InventoryDbContext))]
-    [Migration("20260922060044_AddInventoryOutbox")]
+    [Migration("20260923195249_AddInventoryOutbox")]
     partial class AddInventoryOutbox
     {
         /// <inheritdoc />
@@ -70,6 +70,67 @@ namespace Sellora.InventoryService.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_inventory_owner_type", "owner_type IN ('Company', 'Agency', 'SalesRep')");
                         });
+                });
+
+            modelBuilder.Entity("Sellora.InventoryService.Domain.Entities.OutboxMessage", b =>
+                {
+                    b.Property<Guid>("OutboxId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("outbox_id");
+
+                    b.Property<Guid>("AggregateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("aggregate_id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("event_type");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("last_error");
+
+                    b.Property<DateTimeOffset>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload");
+
+                    b.Property<DateTimeOffset?>("PublishedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("published_at");
+
+                    b.Property<string>("SchemaVersion")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("schema_version");
+
+                    b.HasKey("OutboxId")
+                        .HasName("pk_outbox_message");
+
+                    b.HasIndex("PublishedAt", "NextAttemptAt")
+                        .HasDatabaseName("ix_outbox_message_pending_relay");
+
+                    b.ToTable("outbox_message", (string)null);
                 });
 
             modelBuilder.Entity("Sellora.InventoryService.Domain.Entities.ProcessedInventoryEvent", b =>
