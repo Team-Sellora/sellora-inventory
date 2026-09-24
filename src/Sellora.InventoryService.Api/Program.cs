@@ -71,6 +71,22 @@ builder.Services.AddScoped<ISystemTenantContext>(serviceProvider =>
     serviceProvider.GetRequiredService<HttpTenantContext>());
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
 
+// Caller scope (agency / sales rep) comes from Organization's
+// GET /api/me/scope, cached per user, instead of token claims.
+var organizationOptions = builder.Configuration.GetSection(OrganizationOptions.Section).Get<OrganizationOptions>()
+    ?? new OrganizationOptions();
+builder.Services.AddMemoryCache();
+builder.Services.Configure<CallerScopeOptions>(builder.Configuration.GetSection(CallerScopeOptions.Section));
+builder.Services.AddHttpClient<IOrganizationScopeClient, OrganizationScopeClient>(client =>
+{
+    if (Uri.TryCreate(organizationOptions.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute, out var baseUrl))
+    {
+        client.BaseAddress = baseUrl;
+    }
+
+    client.Timeout = TimeSpan.FromSeconds(organizationOptions.TimeoutSeconds);
+});
+
 var connectionString =
     builder.Configuration.GetConnectionString("Default");
 
@@ -217,6 +233,8 @@ if (!app.Environment.IsEnvironment("Container"))
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.UseMiddleware<CallerScopeMiddleware>();
 
 app.MapControllers();
 app.MapHealthChecks("/health");
