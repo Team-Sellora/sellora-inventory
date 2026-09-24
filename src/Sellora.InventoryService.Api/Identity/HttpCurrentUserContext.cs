@@ -19,27 +19,13 @@ public sealed class HttpCurrentUserContext(
         ?? User?.FindFirst("roles")?.Value
         ?? User?.FindFirst("role")?.Value;
 
-    public Guid? AgencyId
-    {
-        get
-        {
-            var value = User?.FindFirst("agencyId")?.Value;
+    // Hierarchy IDs come from Organization (CallerScopeMiddleware), never
+    // from token claims, so nobody copies database IDs into WSO2 IS.
+    private CallerScope Scope =>
+        httpContextAccessor.HttpContext?.Items[CallerScopeMiddleware.ItemKey] as CallerScope
+        ?? CallerScope.Empty;
 
-            return Guid.TryParse(value, out var agencyId)
-                ? agencyId
-                : null;
-        }
-    }
+    public Guid? AgencyId => Scope.AgencyId;
 
-    public Guid? SalesRepId
-    {
-        get
-        {
-            var value = User?.FindFirst("salesRepId")?.Value;
-
-            return Guid.TryParse(value, out var salesRepId)
-                ? salesRepId
-                : null;
-        }
-    }
+    public Guid? SalesRepId => Scope.SalesRepId;
 }
