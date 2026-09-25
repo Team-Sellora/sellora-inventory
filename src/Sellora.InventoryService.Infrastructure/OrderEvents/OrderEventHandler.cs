@@ -96,9 +96,12 @@ public sealed class OrderEventHandler(
             o.InventoryOwnerId == reservation.InventoryOwnerId, cancellationToken))
             throw new InvalidInventoryEventException("The resolved inventory owner is unknown.");
 
+        // US-E4-5: a cancelled order may already have its stock sold (a
+        // scheduled delivery commits at placement), so cancellation returns
+        // it rather than failing on a confirmed reservation.
         var result = confirm
             ? await reservationService.ConfirmAsync(reservationId, cancellationToken)
-            : await reservationService.ReleaseAsync(reservationId, cancellationToken);
+            : await reservationService.CancelForOrderAsync(reservationId, cancellationToken);
 
         var alreadyApplied = confirm
             ? result.Outcome == ReservationOutcome.ReservationAlreadyConfirmed

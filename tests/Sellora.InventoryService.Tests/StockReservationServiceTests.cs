@@ -154,6 +154,88 @@ public sealed class StockReservationServiceTests
         Assert.Equal(-3, movement.ReservedDelta);
     }
 
+    // US-E4-5: a scheduled delivery's stock is sold at placement, so a
+    // rejection or shop cancellation must put it back on hand.
+    [Fact]
+    public async Task CancelForOrderAsync_returns_the_stock_of_a_confirmed_reservation()
+    {
+        var seed = await SeedStockAsync(10);
+
+        await using var db = _fixture.CreateContext(seed.CompanyId);
+        var service = CreateService(db, seed.CompanyId);
+
+        var reserved = await service.ReserveAsync(
+            Request("ORDER-CANCEL-CONFIRMED-001", seed.OwnerId, seed.ProductIds[0], quantity: 4));
+        var reservationId = reserved.Reservation!.ReservationId;
+        Assert.Equal(ReservationOutcome.Success, (await service.ConfirmAsync(reservationId)).Outcome);
+
+        var cancelled = await service.CancelForOrderAsync(reservationId);
+
+        Assert.Equal(ReservationOutcome.Success, cancelled.Outcome);
+        Assert.Equal("Released", cancelled.Reservation!.Status);
+
+        var stockItem = await db.StockItems.AsNoTracking()
+            .SingleAsync(item => item.StockItemId == seed.StockItemIds[0]);
+        Assert.Equal(10, stockItem.QuantityOnHand);
+        Assert.Equal(0, stockItem.QuantityReserved);
+
+        var returned = await db.StockMovements.SingleAsync(movement =>
+            movement.ReservationId == reservationId &&
+            movement.MovementType == StockMovementType.Returned);
+        Assert.Equal(4, returned.OnHandDelta);
+        Assert.Equal(0, returned.ReservedDelta);
+        Assert.Equal("ORDER-CANCEL-CONFIRMED-001", returned.ReferenceId);
+    }
+
+    [Fact]
+    public async Task CancelForOrderAsync_on_a_held_reservation_is_an_ordinary_release()
+    {
+        var seed = await SeedStockAsync(6);
+
+        await using var db = _fixture.CreateContext(seed.CompanyId);
+        var service = CreateService(db, seed.CompanyId);
+
+        var reserved = await service.ReserveAsync(
+            Request("ORDER-CANCEL-HELD-001", seed.OwnerId, seed.ProductIds[0], quantity: 2));
+
+        var cancelled = await service.CancelForOrderAsync(reserved.Reservation!.ReservationId);
+
+        Assert.Equal(ReservationOutcome.Success, cancelled.Outcome);
+        var stockItem = await db.StockItems.AsNoTracking()
+            .SingleAsync(item => item.StockItemId == seed.StockItemIds[0]);
+        Assert.Equal(6, stockItem.QuantityOnHand);
+        Assert.Equal(0, stockItem.QuantityReserved);
+        Assert.True(await db.StockMovements.AnyAsync(movement =>
+            movement.ReservationId == reserved.Reservation.ReservationId &&
+            movement.MovementType == StockMovementType.Released));
+    }
+
+    [Fact]
+    public async Task CancelForOrderAsync_twice_returns_the_stock_only_once()
+    {
+        var seed = await SeedStockAsync(10);
+
+        await using var db = _fixture.CreateContext(seed.CompanyId);
+        var service = CreateService(db, seed.CompanyId);
+
+        var reserved = await service.ReserveAsync(
+            Request("ORDER-CANCEL-TWICE-001", seed.OwnerId, seed.ProductIds[0], quantity: 3));
+        var reservationId = reserved.Reservation!.ReservationId;
+        await service.ConfirmAsync(reservationId);
+
+        await service.CancelForOrderAsync(reservationId);
+        var replay = await service.CancelForOrderAsync(reservationId);
+
+        // The event consumer treats this outcome as "already applied".
+        Assert.Equal(ReservationOutcome.ReservationAlreadyReleased, replay.Outcome);
+        var stockItem = await db.StockItems.AsNoTracking()
+            .SingleAsync(item => item.StockItemId == seed.StockItemIds[0]);
+        Assert.Equal(10, stockItem.QuantityOnHand);
+        Assert.Equal(1, await db.StockMovements.CountAsync(movement =>
+            movement.ReservationId == reservationId &&
+            movement.MovementType == StockMovementType.Returned));
+    }
+
     [Fact]
     public async Task ReserveAsync_parallel_requests_do_not_oversell()
     {
