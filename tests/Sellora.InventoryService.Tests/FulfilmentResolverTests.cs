@@ -386,5 +386,10 @@ public sealed class FulfilmentResolverTests
             Guid reservationId,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<ReserveStockResult> CancelForOrderAsync(
+            Guid reservationId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

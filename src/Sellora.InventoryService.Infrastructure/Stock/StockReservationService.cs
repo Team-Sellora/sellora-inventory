@@ -309,6 +309,127 @@ public sealed class StockReservationService : IStockReservationService
             cancellationToken);
     }
 
+    public async Task<ReserveStockResult> CancelForOrderAsync(
+        Guid reservationId,
+        CancellationToken cancellationToken = default)
+    {
+        if (_tenantContext.CompanyId is null)
+        {
+            return ReserveStockResult.Failure(
+                ReservationOutcome.TenantNotAvailable,
+                "A company identifier is required.");
+        }
+
+        // Same ownership rule as CompleteAsync: an event handler's
+        // transaction is reused, a direct caller gets its own.
+        await using var transaction = _db.Database.CurrentTransaction is null
+            ? await _db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+
+        var reservation = await _db.StockReservations
+            .FromSqlInterpolated($"SELECT * FROM stock_reservation WHERE reservation_id = {reservationId} AND company_id = {_tenantContext.CompanyId.Value} FOR UPDATE")
+            .Include(candidate => candidate.Lines)
+            .SingleOrDefaultAsync(
+                candidate => candidate.ReservationId == reservationId,
+                cancellationToken);
+
+        if (reservation is null)
+        {
+            return ReserveStockResult.Failure(
+                ReservationOutcome.ReservationNotFound,
+                "The stock reservation was not found.");
+        }
+
+        await _db.Entry(reservation).ReloadAsync(cancellationToken);
+
+        if (reservation.Status == ReservationStatus.Active)
+        {
+            // Still only held: an ordinary release, inside this transaction.
+            var released = await CompleteAsync(
+                reservationId,
+                ReservationStatus.Released,
+                StockMovementType.Released,
+                cancellationToken);
+
+            if (released.Outcome == ReservationOutcome.Success && transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
+
+            return released;
+        }
+
+        if (reservation.Status != ReservationStatus.Confirmed)
+        {
+            return ReserveStockResult.Failure(
+                ReservationOutcome.ReservationAlreadyReleased,
+                "The stock reservation is no longer active.");
+        }
+
+        // Confirmed: the stock was sold for this order (a scheduled delivery
+        // commits at placement) but never left the owner, because the order
+        // was cancelled before delivery. Put it back on hand.
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var line in reservation.Lines.OrderBy(line => line.StockItemId))
+        {
+            var affected = await _db.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                UPDATE stock_item
+                SET quantity_on_hand = quantity_on_hand + {line.Quantity},
+                    row_version = row_version + 1,
+                    updated_at = {now}
+                WHERE stock_item_id = {line.StockItemId}
+                """,
+                cancellationToken);
+
+            if (affected != 1)
+            {
+                if (transaction is not null)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                }
+
+                return ReserveStockResult.Failure(
+                    ReservationOutcome.InsufficientStock,
+                    "The cancelled order's stock could not be returned safely.");
+            }
+
+            _db.StockMovements.Add(new StockMovement
+            {
+                StockMovementId = Guid.NewGuid(),
+                StockItemId = line.StockItemId,
+                ReservationId = reservation.ReservationId,
+                MovementType = StockMovementType.Returned,
+                OnHandDelta = line.Quantity,
+                ReservedDelta = 0,
+                ReferenceType = "Order",
+                ReferenceId = reservation.OrderReference,
+                Reason = "Stock returned: order cancelled before delivery.",
+                OccurredAt = now
+            });
+
+            // The raw UPDATE bypassed the tracked entity; reload before
+            // deciding whether the low-stock alert should re-arm.
+            var stockItem = await _db.StockItems.SingleAsync(
+                item => item.StockItemId == line.StockItemId, cancellationToken);
+            await _db.Entry(stockItem).ReloadAsync(cancellationToken);
+            _lowStock.RearmIfRestocked(stockItem);
+        }
+
+        reservation.Status = ReservationStatus.Released;
+        reservation.CompletedAt = now;
+
+        await _db.SaveChangesAsync(cancellationToken);
+
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
+
+        return ReserveStockResult.Success(ToResponse(reservation));
+    }
+
     private async Task<ReserveStockResult> CompleteAsync(
         Guid reservationId,
         ReservationStatus completedStatus,

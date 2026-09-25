@@ -7,7 +7,7 @@ Implementation scope: T1–T5. T6 integration/acceptance testing remains with QA
 | Subtask | Implementation |
 | --- | --- |
 | T1 | `OrderEventHandler` confirms the tenant-scoped reservation matching the order reference. `StockReservationService` locks the reservation before checking status and writes `Sold` while reducing on-hand and reserved. |
-| T2 | `OrderCancelledEvent` releases an active reservation and writes `Released`; on-hand is unchanged. Cancellation after confirmation is rejected, not silently converted into a return. |
+| T2 | `OrderCancelledEvent` releases an active reservation and writes `Released`; on-hand is unchanged. **Changed by US-E4-5:** a *confirmed* reservation is now returned to on-hand (`Returned` movement, reservation → `Released`) instead of being dead-lettered — see below. |
 | T3 | `ReturnAcceptedEvent` restores the named owner's product/batch quantities and writes `Returned` with the return reference. Missing stock rows are created; unknown owners are rejected. |
 | T4 | `processed_inventory_event` uses `(company_id, event_id)` as a unique message identity. The insert, stock changes, ledger and reservation transition share one transaction. Duplicate payloads are no-ops; reusing an event ID with different contents is rejected. |
 | T5 | `OrderEventConsumerService` routes permanent errors to the configured dead-letter topic. It commits the input offset only after processing or acknowledged dead-letter publication. Temporary infrastructure failures rejoin from committed offsets. |
@@ -104,3 +104,28 @@ Build and existing unit tests are developer checks, not T6 acceptance evidence.
 QA still owns duplicate/concurrent delivery, confirm/cancel/expiry races, rollback,
 five-unit return restoration, full-cycle reconciliation and real Kafka dead-letter
 verification against PostgreSQL. No full-story acceptance sign-off is implied.
+
+## US-E4-5 — cancelling an order whose stock is already confirmed
+
+Order now holds scheduled deliveries for agency approval, and commits their
+stock at placement (Inventory's 15-minute hold is far shorter than an agency
+takes to decide). A rejection, or a shop cancellation inside the one-hour
+window, therefore arrives as `OrderCancelled` for a **confirmed** reservation.
+Before this change that event was dead-lettered and the stock stayed sold.
+
+`StockReservationService.CancelForOrderAsync` (used only by the
+`OrderCancelled` handler):
+
+| Reservation status | Result |
+| --- | --- |
+| `Active` | Ordinary release — `Released` movement, reserved goes down. |
+| `Confirmed` | On-hand goes back up by each line's quantity, one `Returned` movement per line (`ReferenceType = Order`), reservation → `Released`, low-stock alert re-armed if the item is back above its threshold. |
+| `Released` / `Expired` | `ReservationAlreadyReleased` — the handler treats it as already applied, so a replayed event changes nothing. |
+
+Why returning confirmed stock is safe now: Order only publishes
+`OrderCancelled` for an order whose goods never left the owner — a scheduled
+delivery before delivery (cash sales that were paid and handed over cannot be
+cancelled), or a cash sale whose payment was refused because the shop
+cancelled at the same moment. Order is the source of truth for whether an
+order stands. The HTTP `release` endpoint is unchanged and still only
+releases held reservations.
