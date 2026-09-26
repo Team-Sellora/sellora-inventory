@@ -152,7 +152,7 @@ public sealed class OrderEventConsumerService(
             throw new InvalidInventoryEventException("EventType is required.");
 
         var eventType = envelope.EventType;
-        if (eventType is not ("OrderConfirmed" or "OrderCancelled" or "ReturnAccepted"))
+        if (eventType is not ("OrderConfirmed" or "OrderCancelled" or "ReturnAccepted" or "VanStockReturned"))
         {
             logger.LogDebug("Ignoring unrelated event {EventType} on {Topic}.", eventType, record.Topic);
             return;
@@ -175,6 +175,10 @@ public sealed class OrderEventConsumerService(
                 break;
             case "ReturnAccepted":
                 await handler.HandleAsync(Deserialize<ReturnAcceptedEvent>(payload), cancellationToken);
+                break;
+            case "VanStockReturned":
+                // US-E4-6: published by sellora-order, so it arrives on the order topic.
+                await handler.HandleAsync(Deserialize<VanStockReturnedEvent>(payload), cancellationToken);
                 break;
         }
     }
