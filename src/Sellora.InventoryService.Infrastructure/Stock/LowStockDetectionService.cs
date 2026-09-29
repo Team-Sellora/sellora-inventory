@@ -16,13 +16,19 @@ public sealed class LowStockDetectionService(InventoryDbContext db)
 
         var now = DateTimeOffset.UtcNow;
         item.LowStockNotified = true;
+
+        // US-E5-4: say who holds the stock (agency, rep's van or company).
+        var owner = await db.InventoryOwners.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.InventoryOwnerId == item.InventoryOwnerId, cancellationToken);
+
         db.OutboxMessages.Add(new OutboxMessage
         {
             OutboxId = Guid.NewGuid(), CompanyId = item.CompanyId, AggregateId = item.StockItemId,
             EventType = "LowStockDetected", OccurredAt = now, NextAttemptAt = now,
             Payload = JsonSerializer.Serialize(new LowStockDetectedEvent(Guid.NewGuid(), "LowStockDetected", "1.0",
                 item.CompanyId, item.StockItemId, item.InventoryOwnerId, item.ProductId, item.BatchId,
-                item.AvailableQuantity, threshold, now))
+                item.AvailableQuantity, threshold, now,
+                owner?.OwnerType.ToString(), owner?.ExternalOwnerId, owner?.DisplayName))
         });
     }
 
