@@ -15,18 +15,15 @@ public sealed class StockAdjustmentService : IStockAdjustmentService
     private readonly InventoryDbContext _db;
     private readonly ITenantContext _tenantContext;
     private readonly ICurrentUserContext _currentUser;
-    private readonly LowStockDetectionService _lowStock;
 
     public StockAdjustmentService(
         InventoryDbContext db,
         ITenantContext tenantContext,
-        ICurrentUserContext currentUser,
-        LowStockDetectionService lowStock)
+        ICurrentUserContext currentUser)
     {
         _db = db;
         _tenantContext = tenantContext;
         _currentUser = currentUser;
-        _lowStock = lowStock;
     }
 
     public async Task<AdjustStockResult> AdjustAsync(
@@ -124,7 +121,7 @@ public sealed class StockAdjustmentService : IStockAdjustmentService
         try
         {
             stockItem.ApplyMovement(movement);
-            _lowStock.RearmIfRestocked(stockItem);
+            LowStockDetectionService.RearmIfRestocked(stockItem);
             await _db.SaveChangesAsync(cancellationToken);
         }
         catch (InsufficientStockException)
@@ -153,7 +150,7 @@ public sealed class StockAdjustmentService : IStockAdjustmentService
                 stockItem.QuantityReserved,
                 stockItem.AvailableQuantity,
                 request.QuantityDelta,
-                movement.Reason!,
+                movement.Reason,
                 occurredAt));
     }
 

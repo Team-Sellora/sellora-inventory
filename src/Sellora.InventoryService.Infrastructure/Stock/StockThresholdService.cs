@@ -10,7 +10,7 @@ public sealed class StockThresholdService(InventoryDbContext db, ICurrentUserCon
 {
     public async Task<StockItemResponse?> UpdateAsync(UpdateReorderThresholdRequest request, CancellationToken cancellationToken)
     {
-        if (request.ReorderThreshold is < 0) throw new ArgumentOutOfRangeException(nameof(request.ReorderThreshold));
+        if (request.ReorderThreshold is < 0) throw new ArgumentOutOfRangeException(nameof(request), request.ReorderThreshold, "Reorder threshold cannot be negative.");
         var item = await db.StockItems.Include(x => x.InventoryOwner)
             .SingleOrDefaultAsync(x => x.StockItemId == request.StockItemId, cancellationToken);
         if (item is null) return null;

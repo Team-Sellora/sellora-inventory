@@ -32,7 +32,7 @@ public sealed class LowStockDetectionService(InventoryDbContext db)
         });
     }
 
-    public void RearmIfRestocked(StockItem item)
+    public static void RearmIfRestocked(StockItem item)
     {
         if (item.ReorderThreshold is int threshold && item.AvailableQuantity > threshold)
             item.LowStockNotified = false;
