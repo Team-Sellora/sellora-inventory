@@ -23,15 +23,7 @@ public sealed class OrderEventConsumerService(
     {
         await Task.Yield();
         var settings = options.Value;
-        if (string.IsNullOrWhiteSpace(settings.BootstrapServers) ||
-            string.IsNullOrWhiteSpace(settings.OrderConsumerGroupId) ||
-            string.IsNullOrWhiteSpace(settings.OrderTopic) ||
-            string.IsNullOrWhiteSpace(settings.DeliveryTopic) ||
-            string.IsNullOrWhiteSpace(settings.DeadLetterTopic) ||
-            settings.OrderTopic == settings.DeliveryTopic ||
-            settings.DeadLetterTopic == settings.OrderTopic ||
-            settings.DeadLetterTopic == settings.DeliveryTopic)
-            throw new InvalidOperationException("Inventory event topics and consumer group must be configured and distinct.");
+        ValidateSettings(settings);
 
         var producerConfig = new ProducerConfig
         {
@@ -79,26 +71,7 @@ public sealed class OrderEventConsumerService(
                         // Publication must be acknowledged before advancing the offset.
                         // If Kafka fails, the outer loop replays the source record.
                         await producer.ProduceAsync(settings.DeadLetterTopic,
-                            new Message<string, string>
-                            {
-                                Key = $"{record.Topic}:{record.Partition.Value}:{record.Offset.Value}",
-                                Value = JsonSerializer.Serialize(new
-                                {
-                                    sourceTopic = record.Topic,
-                                    sourcePartition = record.Partition.Value,
-                                    sourceOffset = record.Offset.Value,
-                                    messageKey = record.Message.Key,
-                                    payload = record.Message.Value,
-                                    headers = record.Message.Headers?.Select(header => new
-                                    {
-                                        key = header.Key,
-                                        value = header.GetValueBytes() is byte[] bytes
-                                            ? Convert.ToBase64String(bytes) : null
-                                    }),
-                                    reason = exception.Message,
-                                    failedAt = DateTimeOffset.UtcNow
-                                })
-                            }, stoppingToken);
+                            BuildDeadLetterMessage(record, exception), stoppingToken);
 
                         logger.LogError(exception,
                             "InventoryEventDeadLettered: {Topic}/{Partition}/{Offset} sent to {DeadLetterTopic}.",
@@ -120,11 +93,7 @@ public sealed class OrderEventConsumerService(
             }
             finally
             {
-                try { consumer.Close(); }
-                catch (KafkaException exception)
-                {
-                    logger.LogWarning(exception, "Kafka consumer could not close cleanly.");
-                }
+                CloseConsumer(consumer);
             }
 
             // Rejoin instead of holding a failed record past max.poll.interval.ms.
@@ -137,7 +106,52 @@ public sealed class OrderEventConsumerService(
         }
     }
 
-    private async Task ProcessAsync(ConsumeResult<string, string> record,
+    internal static void ValidateSettings(OrderEventConsumerOptions settings)
+    {
+        if (string.IsNullOrWhiteSpace(settings.BootstrapServers) ||
+            string.IsNullOrWhiteSpace(settings.OrderConsumerGroupId) ||
+            string.IsNullOrWhiteSpace(settings.OrderTopic) ||
+            string.IsNullOrWhiteSpace(settings.DeliveryTopic) ||
+            string.IsNullOrWhiteSpace(settings.DeadLetterTopic) ||
+            settings.OrderTopic == settings.DeliveryTopic ||
+            settings.DeadLetterTopic == settings.OrderTopic ||
+            settings.DeadLetterTopic == settings.DeliveryTopic)
+            throw new InvalidOperationException("Inventory event topics and consumer group must be configured and distinct.");
+    }
+
+    internal static Message<string, string> BuildDeadLetterMessage(
+        ConsumeResult<string, string> record, Exception exception) =>
+        new()
+        {
+            Key = $"{record.Topic}:{record.Partition.Value}:{record.Offset.Value}",
+            Value = JsonSerializer.Serialize(new
+            {
+                sourceTopic = record.Topic,
+                sourcePartition = record.Partition.Value,
+                sourceOffset = record.Offset.Value,
+                messageKey = record.Message.Key,
+                payload = record.Message.Value,
+                headers = record.Message.Headers?.Select(header => new
+                {
+                    key = header.Key,
+                    value = header.GetValueBytes() is byte[] bytes
+                        ? Convert.ToBase64String(bytes) : null
+                }),
+                reason = exception.Message,
+                failedAt = DateTimeOffset.UtcNow
+            })
+        };
+
+    private void CloseConsumer(IConsumer<string, string> consumer)
+    {
+        try { consumer.Close(); }
+        catch (KafkaException exception)
+        {
+            logger.LogWarning(exception, "Kafka consumer could not close cleanly.");
+        }
+    }
+
+    internal async Task ProcessAsync(ConsumeResult<string, string> record,
         OrderEventConsumerOptions settings, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(record.Message.Value))
