@@ -71,7 +71,7 @@ public sealed class CallerScopeMiddleware(RequestDelegate next)
                     Status = StatusCodes.Status503ServiceUnavailable,
                     Title = "Dependency unavailable",
                     Detail = "Organization service is currently unavailable, so your access could not be resolved. Try again shortly."
-                });
+                }, CancellationToken.None);
                 return;
             }
         }
