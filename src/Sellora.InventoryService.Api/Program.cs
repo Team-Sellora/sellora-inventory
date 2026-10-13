@@ -17,6 +17,8 @@ using Sellora.InventoryService.Infrastructure.Persistence.Seeding;
 using Sellora.InventoryService.Infrastructure.Stock;
 using Serilog;
 
+const string TestingEnvironment = "Testing";
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Host.UseSerilog((context, configuration) => configuration
@@ -51,12 +53,15 @@ builder.Services
         // Staging and production must validate the WSO2 certificate chain.
         if (builder.Environment.IsDevelopment() || builder.Environment.IsStaging())
         {
+            // Intentional, environment-gated trust relaxation (see comment above).
+#pragma warning disable S4830 // Server certificates should be verified during SSL/TLS connections
             options.BackchannelHttpHandler = new HttpClientHandler
             {
                 ServerCertificateCustomValidationCallback =
                     HttpClientHandler
                         .DangerousAcceptAnyServerCertificateValidator
             };
+#pragma warning restore S4830
         }
     });
 
@@ -79,7 +84,7 @@ builder.Services.AddMemoryCache();
 builder.Services.Configure<CallerScopeOptions>(builder.Configuration.GetSection(CallerScopeOptions.Section));
 builder.Services.AddHttpClient<IOrganizationScopeClient, OrganizationScopeClient>(client =>
 {
-    if (Uri.TryCreate(organizationOptions.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute, out var baseUrl))
+    if (Uri.TryCreate(organizationOptions.BaseUrl.TrimEnd('/') + '/', UriKind.Absolute, out var baseUrl))
     {
         client.BaseAddress = baseUrl;
     }
@@ -145,18 +150,10 @@ builder.Services.AddScoped<
     IOrderEventHandler,
     OrderEventHandler>();
 
-if (!builder.Environment.IsEnvironment("Testing"))
+if (!builder.Environment.IsEnvironment(TestingEnvironment))
 {
     builder.Services.AddHostedService<OrderEventConsumerService>();
-}
-
-if (!builder.Environment.IsEnvironment("Testing"))
-{
     builder.Services.AddHostedService<HierarchyEventConsumerService>();
-}
-
-if (!builder.Environment.IsEnvironment("Testing"))
-{
     builder.Services.AddHostedService<ReservationExpirySweeper>();
     builder.Services.AddHostedService<OutboxRelayService>();
 }
@@ -202,7 +199,7 @@ app.UseExceptionHandler();
 app.UseSerilogRequestLogging();
 app.UseForwardedHeaders();
 
-if (!app.Environment.IsEnvironment("Testing"))
+if (!app.Environment.IsEnvironment(TestingEnvironment))
 {
     await using var scope = app.Services.CreateAsyncScope();
 
@@ -247,6 +244,11 @@ app.MapGet("/whoami", (HttpContext context) =>
     })))
     .RequireAuthorization();
 
-app.Run();
+await app.RunAsync();
 
-public partial class Program;
+public partial class Program
+{
+    protected Program()
+    {
+    }
+}

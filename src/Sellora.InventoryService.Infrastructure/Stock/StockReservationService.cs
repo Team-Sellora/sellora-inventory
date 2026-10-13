@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using Sellora.InventoryService.Application.Stock;
@@ -182,7 +183,8 @@ public sealed class StockReservationService : IStockReservationService
 
             var totalAvailable = candidates.Sum(item => item.AvailableQuantity);
 
-            if (totalAvailable < line.Quantity)
+            if (totalAvailable < line.Quantity ||
+                !await TryReserveLineAsync(reservation, line, candidates, now, cancellationToken))
             {
                 await transaction.RollbackAsync(cancellationToken);
                 DetachReservationAttempt(reservation.ReservationId);
@@ -191,70 +193,6 @@ public sealed class StockReservationService : IStockReservationService
                     request.InventoryOwnerId,
                     lines,
                     cancellationToken);
-            }
-
-            var remaining = line.Quantity;
-
-            foreach (var stockItem in candidates)
-            {
-                if (remaining <= 0)
-                {
-                    break;
-                }
-
-                // A single line can draw from several batches when the order
-                // does not name one, so split the quantity across stock items.
-                var take = Math.Min(remaining, stockItem.AvailableQuantity);
-
-                // This conditional UPDATE is the concurrency guarantee:
-                // only reserve if sufficient currently available stock remains.
-                var affected = await _db.Database.ExecuteSqlInterpolatedAsync(
-                    $"""
-                    UPDATE stock_item
-                    SET quantity_reserved = quantity_reserved + {take},
-                        row_version = row_version + 1,
-                        updated_at = {now}
-                    WHERE stock_item_id = {stockItem.StockItemId}
-                      AND quantity_on_hand - quantity_reserved >= {take}
-                    """,
-                    cancellationToken);
-
-                if (affected != 1)
-                {
-                    await transaction.RollbackAsync(cancellationToken);
-                    DetachReservationAttempt(reservation.ReservationId);
-
-                    return await InsufficientStockAsync(
-                        request.InventoryOwnerId,
-                        lines,
-                        cancellationToken);
-                }
-
-                reservation.Lines.Add(new StockReservationLine
-                {
-                    StockReservationLineId = Guid.NewGuid(),
-                    ReservationId = reservation.ReservationId,
-                    StockItemId = stockItem.StockItemId,
-                    ProductId = line.ProductId,
-                    BatchId = stockItem.BatchId,
-                    Quantity = take
-                });
-
-                _db.StockMovements.Add(new StockMovement
-                {
-                    StockMovementId = Guid.NewGuid(),
-                    StockItemId = stockItem.StockItemId,
-                    ReservationId = reservation.ReservationId,
-                    MovementType = StockMovementType.Reserved,
-                    OnHandDelta = 0,
-                    ReservedDelta = take,
-                    ReferenceType = "Order",
-                    ReferenceId = reservation.OrderReference,
-                    Reason = "Stock reserved for order.",
-                    OccurredAt = now
-                });
-
-                remaining -= take;
             }
         }
 
@@ -285,6 +223,78 @@ public sealed class StockReservationService : IStockReservationService
 
             throw;
         }
+    }
+
+    /// <summary>
+    /// Reserves one line across its candidate stock items. Returns false when
+    /// a conditional update lost a race, so the caller rolls back.
+    /// </summary>
+    private async Task<bool> TryReserveLineAsync(
+        StockReservation reservation,
+        ReservationLineRequest line,
+        List<StockItem> candidates,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var remaining = line.Quantity;
+
+        foreach (var stockItem in candidates)
+        {
+            if (remaining <= 0)
+            {
+                break;
+            }
+
+            // A single line can draw from several batches when the order
+            // does not name one, so split the quantity across stock items.
+            var take = Math.Min(remaining, stockItem.AvailableQuantity);
+
+            // This conditional UPDATE is the concurrency guarantee:
+            // only reserve if sufficient currently available stock remains.
+            var affected = await _db.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                UPDATE stock_item
+                SET quantity_reserved = quantity_reserved + {take},
+                    row_version = row_version + 1,
+                    updated_at = {now}
+                WHERE stock_item_id = {stockItem.StockItemId}
+                  AND quantity_on_hand - quantity_reserved >= {take}
+                """,
+                cancellationToken);
+
+            if (affected != 1)
+            {
+                return false;
+            }
+
+            reservation.Lines.Add(new StockReservationLine
+            {
+                StockReservationLineId = Guid.NewGuid(),
+                ReservationId = reservation.ReservationId,
+                StockItemId = stockItem.StockItemId,
+                ProductId = line.ProductId,
+                BatchId = stockItem.BatchId,
+                Quantity = take
+            });
+
+            _db.StockMovements.Add(new StockMovement
+            {
+                StockMovementId = Guid.NewGuid(),
+                StockItemId = stockItem.StockItemId,
+                ReservationId = reservation.ReservationId,
+                MovementType = StockMovementType.Reserved,
+                OnHandDelta = 0,
+                ReservedDelta = take,
+                ReferenceType = "Order",
+                ReferenceId = reservation.OrderReference,
+                Reason = "Stock reserved for order.",
+                OccurredAt = now
+            });
+
+            remaining -= take;
+        }
+
+        return true;
     }
 
     public async Task<ReserveStockResult> ReleaseAsync(
@@ -414,7 +424,7 @@ public sealed class StockReservationService : IStockReservationService
             var stockItem = await _db.StockItems.SingleAsync(
                 item => item.StockItemId == line.StockItemId, cancellationToken);
             await _db.Entry(stockItem).ReloadAsync(cancellationToken);
-            _lowStock.RearmIfRestocked(stockItem);
+            LowStockDetectionService.RearmIfRestocked(stockItem);
         }
 
         reservation.Status = ReservationStatus.Released;
@@ -486,36 +496,15 @@ public sealed class StockReservationService : IStockReservationService
 
         foreach (var line in reservation.Lines.OrderBy(line => line.StockItemId))
         {
-            var affected = movementType == StockMovementType.Sold
-                ? await _db.Database.ExecuteSqlInterpolatedAsync(
-                    $"""
-                    UPDATE stock_item
-                    SET quantity_on_hand = quantity_on_hand - {line.Quantity},
-                        quantity_reserved = quantity_reserved - {line.Quantity},
-                        row_version = row_version + 1,
-                        updated_at = {now}
-                    WHERE stock_item_id = {line.StockItemId}
-                      AND quantity_on_hand >= {line.Quantity}
-                      AND quantity_reserved >= {line.Quantity}
-                    """,
-                    cancellationToken)
-                : await _db.Database.ExecuteSqlInterpolatedAsync(
-                    $"""
-                    UPDATE stock_item
-                    SET quantity_reserved = quantity_reserved - {line.Quantity},
-                        row_version = row_version + 1,
-                        updated_at = {now}
-                    WHERE stock_item_id = {line.StockItemId}
-                      AND quantity_reserved >= {line.Quantity}
-                    """,
-                    cancellationToken);
+            var affected = await CompleteLineAsync(
+                line,
+                movementType,
+                now,
+                cancellationToken);
 
             if (affected != 1)
             {
-                if (transaction is not null)
-                {
-                    await transaction.RollbackAsync(cancellationToken);
-                }
+                await RollbackOwnedTransactionAsync(transaction, cancellationToken);
                 // An event caller treats this failure as permanent and rolls
                 // back its enclosing transaction, including the receipt.
                 DetachReservationAttempt(reservation.ReservationId);
@@ -525,23 +514,11 @@ public sealed class StockReservationService : IStockReservationService
                     "The reservation could not be completed safely.");
             }
 
-            _db.StockMovements.Add(new StockMovement
-            {
-                StockMovementId = Guid.NewGuid(),
-                StockItemId = line.StockItemId,
-                ReservationId = reservation.ReservationId,
-                MovementType = movementType,
-                OnHandDelta = movementType == StockMovementType.Sold
-                    ? -line.Quantity
-                    : 0,
-                ReservedDelta = -line.Quantity,
-                ReferenceType = "Order",
-                ReferenceId = reservation.OrderReference,
-                Reason = movementType == StockMovementType.Sold
-                    ? "Reserved stock sold for confirmed order."
-                    : "Stock reservation released.",
-                OccurredAt = now
-            });
+            _db.StockMovements.Add(CompletionMovement(
+                reservation,
+                line,
+                movementType,
+                now));
 
             if (movementType == StockMovementType.Sold)
                 await _lowStock.EvaluateAfterDecrementAsync(line.StockItemId, cancellationToken);
@@ -557,6 +534,70 @@ public sealed class StockReservationService : IStockReservationService
         }
 
         return ReserveStockResult.Success(ToResponse(reservation));
+    }
+
+    private Task<int> CompleteLineAsync(
+        StockReservationLine line,
+        StockMovementType movementType,
+        DateTimeOffset now,
+        CancellationToken cancellationToken) =>
+        movementType == StockMovementType.Sold
+            ? _db.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                UPDATE stock_item
+                SET quantity_on_hand = quantity_on_hand - {line.Quantity},
+                    quantity_reserved = quantity_reserved - {line.Quantity},
+                    row_version = row_version + 1,
+                    updated_at = {now}
+                WHERE stock_item_id = {line.StockItemId}
+                  AND quantity_on_hand >= {line.Quantity}
+                  AND quantity_reserved >= {line.Quantity}
+                """,
+                cancellationToken)
+            : _db.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                UPDATE stock_item
+                SET quantity_reserved = quantity_reserved - {line.Quantity},
+                    row_version = row_version + 1,
+                    updated_at = {now}
+                WHERE stock_item_id = {line.StockItemId}
+                  AND quantity_reserved >= {line.Quantity}
+                """,
+                cancellationToken);
+
+    private static StockMovement CompletionMovement(
+        StockReservation reservation,
+        StockReservationLine line,
+        StockMovementType movementType,
+        DateTimeOffset now)
+    {
+        var sold = movementType == StockMovementType.Sold;
+
+        return new StockMovement
+        {
+            StockMovementId = Guid.NewGuid(),
+            StockItemId = line.StockItemId,
+            ReservationId = reservation.ReservationId,
+            MovementType = movementType,
+            OnHandDelta = sold ? -line.Quantity : 0,
+            ReservedDelta = -line.Quantity,
+            ReferenceType = "Order",
+            ReferenceId = reservation.OrderReference,
+            Reason = sold
+                ? "Reserved stock sold for confirmed order."
+                : "Stock reservation released.",
+            OccurredAt = now
+        };
+    }
+
+    private static async Task RollbackOwnedTransactionAsync(
+        IDbContextTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        if (transaction is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+        }
     }
 
     private void DetachReservationAttempt(Guid reservationId)
@@ -654,7 +695,7 @@ public sealed class StockReservationService : IStockReservationService
             .ToListAsync(cancellationToken);
     }
 
-    private static IReadOnlyCollection<StockItem> CandidatesFor(
+    private static List<StockItem> CandidatesFor(
         IReadOnlyCollection<StockItem> stockItems,
         ReservationLineRequest line)
     {
@@ -671,7 +712,7 @@ public sealed class StockReservationService : IStockReservationService
             .ToList();
     }
 
-    private static IReadOnlyCollection<ReservationLineRequest> NormalizeLines(
+    private static List<ReservationLineRequest> NormalizeLines(
         IReadOnlyCollection<ReservationLineRequest> lines) =>
         lines
             .GroupBy(line => new { line.ProductId, line.BatchId })

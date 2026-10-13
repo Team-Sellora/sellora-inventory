@@ -96,7 +96,7 @@ public sealed class HierarchyEventConsumerService : BackgroundService
         }
     }
 
-    private async Task<bool> ProcessAsync(
+    internal async Task<bool> ProcessAsync(
         string payload,
         CancellationToken cancellationToken)
     {

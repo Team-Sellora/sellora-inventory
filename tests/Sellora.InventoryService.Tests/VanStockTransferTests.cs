@@ -81,7 +81,7 @@ public sealed class VanStockTransferTests
         var reservations = new StockReservationService(
             db, new FixedTenant(_companyId), Options.Create(new StockReservationOptions { TtlMinutes = 15 }),
             new LowStockDetectionService(db));
-        var handler = new OrderEventHandler(reservations, new NoOpSystemTenant(), db, new LowStockDetectionService(db));
+        var handler = new OrderEventHandler(reservations, new NoOpSystemTenant(), db);
         await handler.HandleAsync(e);
     }
 

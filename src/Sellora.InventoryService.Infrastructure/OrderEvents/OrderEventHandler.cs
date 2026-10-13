@@ -14,53 +14,52 @@ namespace Sellora.InventoryService.Infrastructure.OrderEvents;
 public sealed class OrderEventHandler(
     IStockReservationService reservationService,
     ISystemTenantContext systemTenantContext,
-    InventoryDbContext db,
-    LowStockDetectionService lowStock) : IOrderEventHandler
+    InventoryDbContext db) : IOrderEventHandler
 {
-    public Task HandleAsync(OrderConfirmedEvent e, CancellationToken cancellationToken = default)
+    public Task HandleAsync(OrderConfirmedEvent @event, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(e);
-        ValidateEnvelope(e.EventId, e.CompanyId, e.EventType, "OrderConfirmed", e.SchemaVersion);
-        return ProcessOnceAsync(e.CompanyId, e.EventId, e.EventType, e,
-            () => CompleteReservationAsync(e.ReservationId, e.OrderReference, true, cancellationToken),
+        ArgumentNullException.ThrowIfNull(@event);
+        ValidateEnvelope(@event.EventId, @event.CompanyId, @event.EventType, "OrderConfirmed", @event.SchemaVersion);
+        return ProcessOnceAsync(@event.CompanyId, @event.EventId, @event.EventType, @event,
+            () => CompleteReservationAsync(@event.ReservationId, @event.OrderReference, true, cancellationToken),
             cancellationToken);
     }
 
-    public Task HandleAsync(OrderCancelledEvent e, CancellationToken cancellationToken = default)
+    public Task HandleAsync(OrderCancelledEvent @event, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(e);
-        ValidateEnvelope(e.EventId, e.CompanyId, e.EventType, "OrderCancelled", e.SchemaVersion);
-        return ProcessOnceAsync(e.CompanyId, e.EventId, e.EventType, e,
-            () => CompleteReservationAsync(e.ReservationId, e.OrderReference, false, cancellationToken),
+        ArgumentNullException.ThrowIfNull(@event);
+        ValidateEnvelope(@event.EventId, @event.CompanyId, @event.EventType, "OrderCancelled", @event.SchemaVersion);
+        return ProcessOnceAsync(@event.CompanyId, @event.EventId, @event.EventType, @event,
+            () => CompleteReservationAsync(@event.ReservationId, @event.OrderReference, false, cancellationToken),
             cancellationToken);
     }
 
-    public Task HandleAsync(ReturnAcceptedEvent e, CancellationToken cancellationToken = default)
+    public Task HandleAsync(ReturnAcceptedEvent @event, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(e);
-        ValidateEnvelope(e.EventId, e.CompanyId, e.EventType, "ReturnAccepted", e.SchemaVersion);
-        if (e.InventoryOwnerId == Guid.Empty || string.IsNullOrWhiteSpace(e.ReturnReference) ||
-            e.ReturnReference.Length > 100 || e.Lines is null || e.Lines.Count == 0 ||
-            e.Lines.Any(line => line is null || line.ProductId == Guid.Empty ||
+        ArgumentNullException.ThrowIfNull(@event);
+        ValidateEnvelope(@event.EventId, @event.CompanyId, @event.EventType, "ReturnAccepted", @event.SchemaVersion);
+        if (@event.InventoryOwnerId == Guid.Empty || string.IsNullOrWhiteSpace(@event.ReturnReference) ||
+            @event.ReturnReference.Length > 100 || @event.Lines is null || @event.Lines.Count == 0 ||
+            @event.Lines.Any(line => line is null || line.ProductId == Guid.Empty ||
                 line.BatchId == Guid.Empty || line.Quantity <= 0))
             throw new InvalidInventoryEventException("ReturnAccepted contains invalid owner, reference or lines.");
 
-        return ProcessOnceAsync(e.CompanyId, e.EventId, e.EventType, e,
-            () => RestoreAsync(e, cancellationToken), cancellationToken);
+        return ProcessOnceAsync(@event.CompanyId, @event.EventId, @event.EventType, @event,
+            () => RestoreAsync(@event, cancellationToken), cancellationToken);
     }
 
-    public Task HandleAsync(VanStockReturnedEvent e, CancellationToken cancellationToken = default)
+    public Task HandleAsync(VanStockReturnedEvent @event, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(e);
-        ValidateEnvelope(e.EventId, e.CompanyId, e.EventType, "VanStockReturned", e.SchemaVersion);
-        if (e.SalesRepId == Guid.Empty || e.AgencyId == Guid.Empty || e.VanInventoryOwnerId == Guid.Empty ||
-            string.IsNullOrWhiteSpace(e.ReturnReference) || e.ReturnReference.Length > 100 ||
-            e.Lines is null || e.Lines.Count == 0 ||
-            e.Lines.Any(line => line is null || line.ProductId == Guid.Empty || line.AcceptedQuantity < 0))
+        ArgumentNullException.ThrowIfNull(@event);
+        ValidateEnvelope(@event.EventId, @event.CompanyId, @event.EventType, "VanStockReturned", @event.SchemaVersion);
+        if (@event.SalesRepId == Guid.Empty || @event.AgencyId == Guid.Empty || @event.VanInventoryOwnerId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(@event.ReturnReference) || @event.ReturnReference.Length > 100 ||
+            @event.Lines is null || @event.Lines.Count == 0 ||
+            @event.Lines.Any(line => line is null || line.ProductId == Guid.Empty || line.AcceptedQuantity < 0))
             throw new InvalidInventoryEventException("VanStockReturned contains an invalid rep, agency, owner, reference or lines.");
 
-        return ProcessOnceAsync(e.CompanyId, e.EventId, e.EventType, e,
-            () => TransferVanStockAsync(e, cancellationToken), cancellationToken);
+        return ProcessOnceAsync(@event.CompanyId, @event.EventId, @event.EventType, @event,
+            () => TransferVanStockAsync(@event, cancellationToken), cancellationToken);
     }
 
     private async Task ProcessOnceAsync<T>(Guid companyId, Guid eventId, string eventType,
@@ -169,7 +168,7 @@ public sealed class OrderEventHandler(
                 ReferenceType = "Return", ReferenceId = e.ReturnReference.Trim(),
                 Reason = "Stock restored for accepted return.", OccurredAt = DateTimeOffset.UtcNow
             });
-            lowStock.RearmIfRestocked(stock);
+            LowStockDetectionService.RearmIfRestocked(stock);
         }
     }
 
@@ -182,12 +181,40 @@ public sealed class OrderEventHandler(
     /// </summary>
     private async Task TransferVanStockAsync(VanStockReturnedEvent e, CancellationToken cancellationToken)
     {
+        var van = await LockVanOwnerAsync(e, cancellationToken);
+        var agencyOwnerId = await LockAgencyOwnerAsync(e, cancellationToken);
+
+        var transfer = new VanTransfer(e, van.InventoryOwnerId, agencyOwnerId,
+            e.ReturnReference.Trim(), DateTimeOffset.UtcNow,
+            new Dictionary<(Guid ProductId, Guid? BatchId), StockItem>());
+
+        var lines = e.Lines
+            .GroupBy(line => line.ProductId)
+            .Select(group => (ProductId: group.Key, Quantity: group.Sum(line => (long)line.AcceptedQuantity)))
+            .Where(line => line.Quantity > 0)
+            .OrderBy(line => line.ProductId)
+            .ToArray();
+
+        foreach (var (productId, quantity) in lines)
+            await TransferProductAsync(transfer, productId, quantity, cancellationToken);
+
+        foreach (var agencyItem in transfer.Credited.Values)
+            LowStockDetectionService.RearmIfRestocked(agencyItem);
+    }
+
+    private async Task<InventoryOwner> LockVanOwnerAsync(VanStockReturnedEvent e, CancellationToken cancellationToken)
+    {
         var van = await db.InventoryOwners
             .FromSqlInterpolated($"SELECT * FROM inventory_owner WHERE inventory_owner_id = {e.VanInventoryOwnerId} AND company_id = {e.CompanyId} FOR UPDATE")
             .SingleOrDefaultAsync(cancellationToken);
         if (van is null || van.OwnerType != InventoryOwnerType.SalesRep || van.ExternalOwnerId != e.SalesRepId)
             throw new InvalidInventoryEventException("The van owner is unknown or does not belong to the returning rep.");
 
+        return van;
+    }
+
+    private async Task<Guid> LockAgencyOwnerAsync(VanStockReturnedEvent e, CancellationToken cancellationToken)
+    {
         var agencyOwnerId = await db.InventoryOwners
             .Where(owner => owner.OwnerType == InventoryOwnerType.Agency && owner.ExternalOwnerId == e.AgencyId)
             .Select(owner => (Guid?)owner.InventoryOwnerId)
@@ -200,111 +227,126 @@ public sealed class OrderEventHandler(
             .FromSqlInterpolated($"SELECT * FROM inventory_owner WHERE inventory_owner_id = {agencyOwnerId.Value} AND company_id = {e.CompanyId} FOR UPDATE")
             .SingleAsync(cancellationToken);
 
-        var reference = e.ReturnReference.Trim();
-        var now = DateTimeOffset.UtcNow;
-        var credited = new Dictionary<(Guid ProductId, Guid? BatchId), StockItem>();
+        return agencyOwnerId.Value;
+    }
 
-        var lines = e.Lines
-            .GroupBy(line => line.ProductId)
-            .Select(group => new { ProductId = group.Key, Quantity = group.Sum(line => (long)line.AcceptedQuantity) })
-            .Where(line => line.Quantity > 0)
-            .OrderBy(line => line.ProductId)
-            .ToArray();
+    private async Task TransferProductAsync(VanTransfer transfer, Guid productId, long quantity,
+        CancellationToken cancellationToken)
+    {
+        var vanItems = await db.StockItems.AsNoTracking()
+            .Where(item => item.InventoryOwnerId == transfer.VanOwnerId && item.ProductId == productId)
+            .ToListAsync(cancellationToken);
+        vanItems = vanItems.OrderBy(item => item.BatchId ?? Guid.Empty).ToList();
 
-        foreach (var line in lines)
+        var held = vanItems.Sum(item => (long)item.AvailableQuantity);
+        if (held < quantity)
+            throw new InvalidInventoryEventException(
+                $"Van return {transfer.Reference}: the van holds only {held} of product {productId}, {quantity} were accepted.");
+
+        var remaining = (int)quantity;
+
+        foreach (var vanItem in vanItems)
         {
-            var vanItems = await db.StockItems.AsNoTracking()
-                .Where(item => item.InventoryOwnerId == van.InventoryOwnerId && item.ProductId == line.ProductId)
-                .ToListAsync(cancellationToken);
-            vanItems = vanItems.OrderBy(item => item.BatchId ?? Guid.Empty).ToList();
+            var take = Math.Min(remaining, vanItem.AvailableQuantity);
+            if (take <= 0)
+                continue;
 
-            var held = vanItems.Sum(item => (long)item.AvailableQuantity);
-            if (held < line.Quantity)
-                throw new InvalidInventoryEventException(
-                    $"Van return {reference}: the van holds only {held} of product {line.ProductId}, {line.Quantity} were accepted.");
+            await DebitVanItemAsync(transfer, vanItem, take, cancellationToken);
+            await CreditAgencyAsync(transfer, productId, vanItem.BatchId, take, cancellationToken);
 
-            var remaining = (int)line.Quantity;
-
-            foreach (var vanItem in vanItems)
-            {
-                var take = Math.Min(remaining, vanItem.AvailableQuantity);
-                if (take <= 0)
-                    continue;
-
-                var debited = await db.Database.ExecuteSqlInterpolatedAsync($"""
-                    UPDATE stock_item
-                    SET quantity_on_hand = quantity_on_hand - {take},
-                        row_version = row_version + 1,
-                        updated_at = {now}
-                    WHERE stock_item_id = {vanItem.StockItemId}
-                      AND quantity_on_hand - quantity_reserved >= {take}
-                    """, cancellationToken);
-
-                // Someone reserved from the van since we read it: roll back and
-                // let the consumer retry from the committed offset.
-                if (debited != 1)
-                    throw new InvalidOperationException(
-                        $"Van stock {vanItem.StockItemId} changed during van return {reference}; retrying.");
-
-                db.StockMovements.Add(new StockMovement
-                {
-                    StockMovementId = Guid.NewGuid(), StockItemId = vanItem.StockItemId,
-                    MovementType = StockMovementType.Transferred,
-                    OnHandDelta = -take, ReservedDelta = 0,
-                    ReferenceType = "VanReturn", ReferenceId = reference,
-                    ActorId = $"sales-rep:{e.SalesRepId}",
-                    Reason = "End-of-route van return to agency.", OccurredAt = now
-                });
-
-                var key = (line.ProductId, vanItem.BatchId);
-                if (!credited.TryGetValue(key, out var agencyItem))
-                {
-                    agencyItem = await db.StockItems.SingleOrDefaultAsync(item =>
-                        item.InventoryOwnerId == agencyOwnerId.Value &&
-                        item.ProductId == line.ProductId && item.BatchId == vanItem.BatchId,
-                        cancellationToken);
-
-                    if (agencyItem is null)
-                    {
-                        agencyItem = new StockItem
-                        {
-                            StockItemId = Guid.NewGuid(), CompanyId = e.CompanyId,
-                            InventoryOwnerId = agencyOwnerId.Value,
-                            ProductId = line.ProductId, BatchId = vanItem.BatchId
-                        };
-                        db.StockItems.Add(agencyItem);
-                    }
-
-                    credited[key] = agencyItem;
-                }
-
-                if ((long)agencyItem.QuantityOnHand + take > int.MaxValue)
-                    throw new InvalidInventoryEventException("Van return quantity exceeds the supported stock balance.");
-
-                // Same batch on the agency side, so expiry tracking follows the goods.
-                agencyItem.ApplyMovement(new StockMovement
-                {
-                    StockMovementId = Guid.NewGuid(), StockItemId = agencyItem.StockItemId,
-                    MovementType = StockMovementType.Transferred,
-                    OnHandDelta = take, ReservedDelta = 0,
-                    ReferenceType = "VanReturn", ReferenceId = reference,
-                    ActorId = $"sales-rep:{e.SalesRepId}",
-                    Reason = "End-of-route van return from sales rep.", OccurredAt = now
-                });
-
-                remaining -= take;
-                if (remaining == 0)
-                    break;
-            }
-
-            if (remaining > 0)
-                throw new InvalidOperationException(
-                    $"Van return {reference}: van stock changed while transferring; retrying.");
+            remaining -= take;
+            if (remaining == 0)
+                break;
         }
 
-        foreach (var agencyItem in credited.Values)
-            lowStock.RearmIfRestocked(agencyItem);
+        if (remaining > 0)
+            throw new InvalidOperationException(
+                $"Van return {transfer.Reference}: van stock changed while transferring; retrying.");
     }
+
+    private async Task DebitVanItemAsync(VanTransfer transfer, StockItem vanItem, int take,
+        CancellationToken cancellationToken)
+    {
+        var debited = await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE stock_item
+            SET quantity_on_hand = quantity_on_hand - {take},
+                row_version = row_version + 1,
+                updated_at = {transfer.Now}
+            WHERE stock_item_id = {vanItem.StockItemId}
+              AND quantity_on_hand - quantity_reserved >= {take}
+            """, cancellationToken);
+
+        // Someone reserved from the van since we read it: roll back and
+        // let the consumer retry from the committed offset.
+        if (debited != 1)
+            throw new InvalidOperationException(
+                $"Van stock {vanItem.StockItemId} changed during van return {transfer.Reference}; retrying.");
+
+        db.StockMovements.Add(new StockMovement
+        {
+            StockMovementId = Guid.NewGuid(), StockItemId = vanItem.StockItemId,
+            MovementType = StockMovementType.Transferred,
+            OnHandDelta = -take, ReservedDelta = 0,
+            ReferenceType = "VanReturn", ReferenceId = transfer.Reference,
+            ActorId = $"sales-rep:{transfer.Event.SalesRepId}",
+            Reason = "End-of-route van return to agency.", OccurredAt = transfer.Now
+        });
+    }
+
+    private async Task CreditAgencyAsync(VanTransfer transfer, Guid productId, Guid? batchId, int take,
+        CancellationToken cancellationToken)
+    {
+        var agencyItem = await GetOrAddAgencyItemAsync(transfer, productId, batchId, cancellationToken);
+
+        if ((long)agencyItem.QuantityOnHand + take > int.MaxValue)
+            throw new InvalidInventoryEventException("Van return quantity exceeds the supported stock balance.");
+
+        // Same batch on the agency side, so expiry tracking follows the goods.
+        agencyItem.ApplyMovement(new StockMovement
+        {
+            StockMovementId = Guid.NewGuid(), StockItemId = agencyItem.StockItemId,
+            MovementType = StockMovementType.Transferred,
+            OnHandDelta = take, ReservedDelta = 0,
+            ReferenceType = "VanReturn", ReferenceId = transfer.Reference,
+            ActorId = $"sales-rep:{transfer.Event.SalesRepId}",
+            Reason = "End-of-route van return from sales rep.", OccurredAt = transfer.Now
+        });
+    }
+
+    private async Task<StockItem> GetOrAddAgencyItemAsync(VanTransfer transfer, Guid productId, Guid? batchId,
+        CancellationToken cancellationToken)
+    {
+        var key = (productId, batchId);
+        if (transfer.Credited.TryGetValue(key, out var agencyItem))
+            return agencyItem;
+
+        agencyItem = await db.StockItems.SingleOrDefaultAsync(item =>
+            item.InventoryOwnerId == transfer.AgencyOwnerId &&
+            item.ProductId == productId && item.BatchId == batchId,
+            cancellationToken);
+
+        if (agencyItem is null)
+        {
+            agencyItem = new StockItem
+            {
+                StockItemId = Guid.NewGuid(), CompanyId = transfer.Event.CompanyId,
+                InventoryOwnerId = transfer.AgencyOwnerId,
+                ProductId = productId, BatchId = batchId
+            };
+            db.StockItems.Add(agencyItem);
+        }
+
+        transfer.Credited[key] = agencyItem;
+        return agencyItem;
+    }
+
+    private sealed record VanTransfer(
+        VanStockReturnedEvent Event,
+        Guid VanOwnerId,
+        Guid AgencyOwnerId,
+        string Reference,
+        DateTimeOffset Now,
+        Dictionary<(Guid ProductId, Guid? BatchId), StockItem> Credited);
 
     private static void ValidateEnvelope(Guid eventId, Guid companyId, string eventType,
         string expectedType, string schemaVersion)

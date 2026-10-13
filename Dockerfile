@@ -22,4 +22,7 @@ EXPOSE 8080
 ENV ASPNETCORE_URLS=http://+:8080
 ENV ASPNETCORE_ENVIRONMENT=Container
 
+# The aspnet base image ships a non-root "app" user; port 8080 needs no root.
+USER $APP_UID
+
 ENTRYPOINT ["dotnet", "Sellora.InventoryService.Api.dll"]

@@ -15,14 +15,18 @@ public sealed class PostgreSqlCollection
 public sealed class PostgreSqlFixture : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _container =
-        new PostgreSqlBuilder()
-            .WithImage("postgres:16-alpine")
+        new PostgreSqlBuilder("postgres:16-alpine")
             .WithDatabase("inventory_tests")
             .WithUsername("sellora")
             .WithPassword("sellora_test_pw")
             .Build();
 
+    private InventoryApiFactory? _api;
+
     public string ConnectionString => _container.GetConnectionString();
+
+    /// <summary>One in-process API host shared by the HTTP tests.</summary>
+    public InventoryApiFactory Api => _api ??= new InventoryApiFactory(ConnectionString);
 
     public async Task InitializeAsync()
     {
@@ -32,7 +36,15 @@ public sealed class PostgreSqlFixture : IAsyncLifetime
         await db.Database.MigrateAsync();
     }
 
-    public Task DisposeAsync() => _container.DisposeAsync().AsTask();
+    public async Task DisposeAsync()
+    {
+        if (_api is not null)
+        {
+            await _api.DisposeAsync();
+        }
+
+        await _container.DisposeAsync();
+    }
 
     public InventoryDbContext CreateContext(Guid? companyId)
     {
